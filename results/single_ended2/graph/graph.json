@@ -1,0 +1,212 @@
+{
+  "topology_id": 2,
+  "netlist": "single_ended2.scs",
+  "graph": {
+    "directed": false,
+    "nodes": {
+      "MM3": {
+        "type": "COMPONENT",
+        "subtype": "nfet"
+      },
+      "MM0": {
+        "type": "COMPONENT",
+        "subtype": "nfet"
+      },
+      "MM4": {
+        "type": "COMPONENT",
+        "subtype": "nfet"
+      },
+      "MM6": {
+        "type": "COMPONENT",
+        "subtype": "pfet"
+      },
+      "MM5": {
+        "type": "COMPONENT",
+        "subtype": "pfet"
+      },
+      "MM1": {
+        "type": "COMPONENT",
+        "subtype": "pfet"
+      },
+      "MM2": {
+        "type": "COMPONENT",
+        "subtype": "pfet"
+      },
+      "Vbiasp2": {
+        "type": "NET"
+      },
+      "Vinn": {
+        "type": "NET"
+      },
+      "net13": {
+        "type": "NET"
+      },
+      "Voutp": {
+        "type": "NET"
+      },
+      "net11": {
+        "type": "NET"
+      },
+      "net016": {
+        "type": "NET"
+      },
+      "vdd!": {
+        "type": "NET"
+      },
+      "gnd!": {
+        "type": "NET"
+      },
+      "net014": {
+        "type": "NET"
+      },
+      "Vbiasn0": {
+        "type": "NET"
+      },
+      "Vinp": {
+        "type": "NET"
+      }
+    },
+    "edges": [
+      {
+        "source": "MM3",
+        "target": "Voutp",
+        "pin": "D"
+      },
+      {
+        "source": "MM3",
+        "target": "Vinp",
+        "pin": "G"
+      },
+      {
+        "source": "MM3",
+        "target": "net11",
+        "pin": "S"
+      },
+      {
+        "source": "MM3",
+        "target": "gnd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM0",
+        "target": "net13",
+        "pin": "D"
+      },
+      {
+        "source": "MM0",
+        "target": "Vinn",
+        "pin": "G"
+      },
+      {
+        "source": "MM0",
+        "target": "net11",
+        "pin": "S"
+      },
+      {
+        "source": "MM0",
+        "target": "gnd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM4",
+        "target": "net11",
+        "pin": "D"
+      },
+      {
+        "source": "MM4",
+        "target": "Vbiasn0",
+        "pin": "G"
+      },
+      {
+        "source": "MM4",
+        "target": "gnd!",
+        "pin": "S"
+      },
+      {
+        "source": "MM4",
+        "target": "gnd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM6",
+        "target": "net13",
+        "pin": "D"
+      },
+      {
+        "source": "MM6",
+        "target": "Vbiasp2",
+        "pin": "G"
+      },
+      {
+        "source": "MM6",
+        "target": "net016",
+        "pin": "S"
+      },
+      {
+        "source": "MM6",
+        "target": "vdd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM5",
+        "target": "Voutp",
+        "pin": "D"
+      },
+      {
+        "source": "MM5",
+        "target": "Vbiasp2",
+        "pin": "G"
+      },
+      {
+        "source": "MM5",
+        "target": "net014",
+        "pin": "S"
+      },
+      {
+        "source": "MM5",
+        "target": "vdd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM1",
+        "target": "net014",
+        "pin": "D"
+      },
+      {
+        "source": "MM1",
+        "target": "net13",
+        "pin": "G"
+      },
+      {
+        "source": "MM1",
+        "target": "vdd!",
+        "pin": "S"
+      },
+      {
+        "source": "MM1",
+        "target": "vdd!",
+        "pin": "B"
+      },
+      {
+        "source": "MM2",
+        "target": "net016",
+        "pin": "D"
+      },
+      {
+        "source": "MM2",
+        "target": "net13",
+        "pin": "G"
+      },
+      {
+        "source": "MM2",
+        "target": "vdd!",
+        "pin": "S"
+      },
+      {
+        "source": "MM2",
+        "target": "vdd!",
+        "pin": "B"
+      }
+    ]
+  }
+}

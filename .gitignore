@@ -1,27 +1,8 @@
-# Ignore compiled Python files
 *.pyc
 __pycache__/
 
-# Ignore virtual environments
-.venv/
-env/
-
-# Ignore Node.js dependencies
-node_modules/
-
-# Ignore build artifacts
 dist/
 build/
 
-# Ignore logs
 *.log
-
-# Ignore large datasets
-data/*.csv
-
-#folders
-results/
-netlists/
-results_d/
-results_opamp2/
-topology_model/
+.cadence

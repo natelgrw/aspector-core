@@ -1,6 +1,7 @@
 simulator lang=spectre 
 global 0 gnd! vdd!
-parameters use_tran=0 rfeedback_val=1000 dc_offset=0 gain_n=-0.5 tempc={{tempc}} nA1={{nA1}} nB1={{nB1}} nA2={{nA2}} nB2={{nB2}} nA3={{nA3}} nB3={{nB3}} nA4={{nA4}} nB4={{nB4}} vdd={{vdd}} vcm={{vcm}} vbiasn0={{vbiasn0}}
+parameters fet_num={{fet_num}} use_tran=0 rfeedback_val=1000 dc_offset=0 gain_n=-0.5 tempc={{tempc}} nA1={{nA1}} nB1={{nB1}} nA2={{nA2}} nB2={{nB2}} nA3={{nA3}} nB3={{nB3}} nA4={{nA4}} nB4={{nB4}} vdd={{vdd}} vcm={{vcm}} vbiasn0={{vbiasn0}} vbiasp2={{vbiasp2}}
+
 {% if fet_num == 7 %}
 include "/homes/natelgrw/Documents/titan_foundation_model/lstp/7nfet.pm"
 include "/homes/natelgrw/Documents/titan_foundation_model/lstp/7pfet.pm"
@@ -18,15 +19,15 @@ include "/homes/natelgrw/Documents/titan_foundation_model/lstp/20nfet.pm"
 include "/homes/natelgrw/Documents/titan_foundation_model/lstp/20pfet.pm"
 {% endif %}
 
-*---single_ended_low_voltage_cascode_current_mirror Vbiasn0 Vinn Vinp Voutp---
-*.PININFO Vbiasn0:I Vinn:I Vinp:I Voutp:O
-MM3 Voutp Vinp net13 gnd! nfet l=nA1 nfin=nB1
-MM0 net11 Vinn net13 gnd! nfet l=nA1 nfin=nB1
-MM4 net13 Vbiasn0 gnd! gnd! nfet l=nA2 nfin=nB2
-MM6 net11 net18 net19 vdd! pfet l=nA3 nfin=nB3
-MM5 Voutp net18 net20 vdd! pfet l=nA3 nfin=nB3
-MM1 net20 net11 vdd! vdd! pfet l=nA4 nfin=nB4
-MM2 net19 net11 vdd! vdd! pfet l=nA4 nfin=nB4
+*---single_ended_telescopic Vbiasn0 Vbiasp2 Vinn Vinp Voutp---
+*.PININFO Vbiasn0:I Vbiasp2:I Vinn:I Vinp:I Voutp:O
+MM3 Voutp Vinp net11 gnd! nfet l=nA1 nfin=nB1
+MM0 net13 Vinn net11 gnd! nfet l=nA1 nfin=nB1
+MM4 net11 Vbiasn0 gnd! gnd! nfet l=nA2 nfin=nB2
+MM6 net13 Vbiasp2 net016 vdd! pfet l=nA3 nfin=nB3
+MM5 Voutp Vbiasp2 net014 vdd! pfet l=nA3 nfin=nB3
+MM1 net014 net13 vdd! vdd! pfet l=nA4 nfin=nB4
+MM2 net016 net13 vdd! vdd! pfet l=nA4 nfin=nB4
 
 *---Ground, VDD, VCM Declarations---
 VS (gnd! 0) vsource dc=0 type=dc
@@ -56,9 +57,10 @@ Rfeedback (Vinn Voutp) resistor r=((use_tran * rfeedback_val) + ((1 - use_tran) 
 Ctran (Voutp gnd!) capacitor c=(use_tran * 50f)
 
 *---Bias Voltages---
+VP2 (Vbiasp2 gnd!) vsource dc=vbiasp2 type=dc
 VN (Vbiasn0 gnd!) vsource dc=vbiasn0 type=dc
 
-simulatorOptions options rawfmt=psfbin psfversion="1.4.0" reltol=1e-3 vabstol=1e-6 \
+simulatorOptions options psfversion="1.4.0" reltol=1e-3 vabstol=1e-6 \
     iabstol=1e-12 temp=tempc tnom=27 scalem=1.0 scale=1.0 gmin=1e-12 rforce=1 \
     maxnotes=5 maxwarns=5 digits=5 cols=80 pivrel=1e-3 \
     sensfile="../psf/sens.output" checklimitdest=psf 

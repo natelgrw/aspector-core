@@ -1,0 +1,22 @@
+{
+  "topology_id": 1,
+  "netlist": "single_ended1",
+  "simulation_id": 10,
+  "specs": {
+    "gain": 0.09844839152107313,
+    "funity": 1.0,
+    "pm": -180,
+    "power": 5.526810081665666e-12,
+    "vos": -100.0,
+    "cmrr": 143.10865974269825,
+    "linearity": null,
+    "output_voltage_swing": [
+      0.9760420501655765,
+      0.9759968683226989
+    ],
+    "integrated_noise": 1.433469528604838e-07,
+    "slew_rate": 4801.057590102964,
+    "settle_time": 0.305026600532031,
+    "valid": false
+  }
+}

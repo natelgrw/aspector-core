@@ -1,0 +1,90 @@
+database_dir: /homes/natelgrw/Documents/titan_foundation_model/results
+measurement:
+  meas_params: {}
+  testbenches:
+    ac_dc:
+      netlist_template: /homes/natelgrw/Documents/titan_foundation_model/demo_netlists/single_ended1.scs
+      tb_module: eval_engines.spectre.script_test.single_ended_meas_man
+      tb_class: ACTB
+      post_process_function: process_ac
+      tb_params: {}
+params:
+  tempc: !!python/tuple
+  - 27.0
+  - 27.0
+  - 1
+  nA1: !!python/tuple
+  - 1.0e-08
+  - 3.0e-08
+  - 1.0e-09
+  nB1: !!python/tuple
+  - 1.0
+  - 20.0
+  - 1
+  nA2: !!python/tuple
+  - 1.0e-08
+  - 3.0e-08
+  - 1.0e-09
+  nB2: !!python/tuple
+  - 1.0
+  - 20.0
+  - 1
+  nA3: !!python/tuple
+  - 1.0e-08
+  - 3.0e-08
+  - 1.0e-09
+  nB3: !!python/tuple
+  - 1.0
+  - 20.0
+  - 1
+  nA4: !!python/tuple
+  - 1.0e-08
+  - 3.0e-08
+  - 1.0e-09
+  nB4: !!python/tuple
+  - 1.0
+  - 20.0
+  - 1
+  vdd: !!python/tuple
+  - 1.0
+  - 1.0
+  - 1
+  vcm: !!python/tuple
+  - 0.5
+  - 0.5
+  - 1
+  vbiasn0: !!python/tuple
+  - 0.0
+  - 0.8
+  - 0.01
+spec_range:
+- !!python/tuple
+  - 10000.0
+  - 1000000.0
+  - 1000.0
+- !!python/tuple
+  - 100000000.0
+  - 10000000000.0
+  - 10000000.0
+- !!python/tuple
+  - 30.0
+  - 90.0
+  - 1
+- !!python/tuple
+  - 1.0e-07
+  - 9.999999999999999e-06
+  - 1.0e-08
+normalize:
+- 1000.0
+- 10000000.0
+- 1
+- 1.0e-08
+target_specs:
+  gain: !!python/tuple
+  - 100000.0
+  UGBW: !!python/tuple
+  - 1000000000.0
+  PM: !!python/tuple
+  - 60.0
+  power: !!python/tuple
+  - 1.0e-06

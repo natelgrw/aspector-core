@@ -1,0 +1,56 @@
+{
+  "topology_id": 1,
+  "netlist": "single_ended1",
+  "simulation_id": 2,
+  "operating_points": {
+    "MM0": {
+      "region_of_operation": 3.0,
+      "gm": 0.000677,
+      "ids": 2.6e-05,
+      "vds": 0.323,
+      "vgs": 0.425
+    },
+    "MM1": {
+      "region_of_operation": 2.0,
+      "gm": 0.000342,
+      "ids": 2.6e-05,
+      "vds": 0.358,
+      "vgs": 0.592
+    },
+    "MM2": {
+      "region_of_operation": 2.0,
+      "gm": 0.000342,
+      "ids": 2.6e-05,
+      "vds": 0.358,
+      "vgs": 0.592
+    },
+    "MM3": {
+      "region_of_operation": 3.0,
+      "gm": 0.000677,
+      "ids": 2.6e-05,
+      "vds": 0.323,
+      "vgs": 0.425
+    },
+    "MM4": {
+      "region_of_operation": 3.0,
+      "gm": 0.00113,
+      "ids": 5.21e-05,
+      "vds": 0.0657,
+      "vgs": 0.495
+    },
+    "MM5": {
+      "region_of_operation": 2.0,
+      "gm": 0.000282,
+      "ids": 2.6e-05,
+      "vds": 0.192,
+      "vgs": 0.598
+    },
+    "MM6": {
+      "region_of_operation": 2.0,
+      "gm": 0.000282,
+      "ids": 2.6e-05,
+      "vds": 0.192,
+      "vgs": 0.598
+    }
+  }
+}

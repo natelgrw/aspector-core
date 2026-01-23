@@ -1,0 +1,22 @@
+{
+  "topology_id": 3,
+  "netlist": "differential1",
+  "simulation_id": 2,
+  "specs": {
+    "gain": 4.511542446399647e-06,
+    "funity": 1.0,
+    "pm": -180,
+    "power": 3.5386742268419455e-08,
+    "vos": -100.0,
+    "cmrr": 2.0000000000036953,
+    "linearity": null,
+    "output_voltage_swing": [
+      0.9987668901036485,
+      0.9987668310377242
+    ],
+    "integrated_noise": 2.6475406952125265e-06,
+    "slew_rate": 9884.046259628189,
+    "settle_time": null,
+    "valid": false
+  }
+}

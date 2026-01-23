@@ -1,0 +1,112 @@
+{
+  "topology_id": 3,
+  "netlist": "differential1",
+  "simulation_id": 2,
+  "operating_points": {
+    "MM0": {
+      "region_of_operation": 0.0,
+      "gm": 1.05e-08,
+      "ids": 2.77e-10,
+      "vds": 0.999,
+      "vgs": 0.198
+    },
+    "MM1": {
+      "region_of_operation": 0.0,
+      "gm": 1.05e-08,
+      "ids": 2.77e-10,
+      "vds": 0.999,
+      "vgs": 0.198
+    },
+    "MM2": {
+      "region_of_operation": 1.0,
+      "gm": 1.55e-09,
+      "ids": 2.79e-10,
+      "vds": 1.97e-08,
+      "vgs": 0.684
+    },
+    "MM3": {
+      "region_of_operation": 1.0,
+      "gm": 1.55e-09,
+      "ids": 2.79e-10,
+      "vds": 1.97e-08,
+      "vgs": 0.684
+    },
+    "MM4": {
+      "region_of_operation": 1.0,
+      "gm": 1.53e-07,
+      "ids": 1.74e-08,
+      "vds": 2.43e-06,
+      "vgs": 0.606
+    },
+    "MM5": {
+      "region_of_operation": 3.0,
+      "gm": 1.27e-06,
+      "ids": 3.48e-08,
+      "vds": 0.00476,
+      "vgs": 0.413
+    },
+    "MM6": {
+      "region_of_operation": 3.0,
+      "gm": 3.05e-07,
+      "ids": 1.74e-08,
+      "vds": 5.95e-06,
+      "vgs": 0.495
+    },
+    "MM7": {
+      "region_of_operation": 3.0,
+      "gm": 3.05e-07,
+      "ids": 1.74e-08,
+      "vds": 5.95e-06,
+      "vgs": 0.495
+    },
+    "MM8": {
+      "region_of_operation": 0.0,
+      "gm": 5.33e-07,
+      "ids": 1.74e-08,
+      "vds": 0.995,
+      "vgs": 0.198
+    },
+    "MM9": {
+      "region_of_operation": 0.0,
+      "gm": 5.33e-07,
+      "ids": 1.74e-08,
+      "vds": 0.995,
+      "vgs": 0.198
+    },
+    "MM10": {
+      "region_of_operation": 1.0,
+      "gm": 1.53e-07,
+      "ids": 1.74e-08,
+      "vds": 2.43e-06,
+      "vgs": 0.606
+    },
+    "MM11": {
+      "region_of_operation": 1.0,
+      "gm": 2.51e-09,
+      "ids": 2.83e-10,
+      "vds": 3.13e-07,
+      "vgs": 0.606
+    },
+    "MM12": {
+      "region_of_operation": 1.0,
+      "gm": 2.51e-09,
+      "ids": 2.83e-10,
+      "vds": 3.13e-07,
+      "vgs": 0.606
+    },
+    "MM13": {
+      "region_of_operation": 3.0,
+      "gm": 9.98e-09,
+      "ids": 2.79e-10,
+      "vds": 0.00123,
+      "vgs": 0.284
+    },
+    "MM14": {
+      "region_of_operation": 3.0,
+      "gm": 9.98e-09,
+      "ids": 2.79e-10,
+      "vds": 0.00123,
+      "vgs": 0.284
+    }
+  }
+}
