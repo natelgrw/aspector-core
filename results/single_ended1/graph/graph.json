@@ -32,28 +32,28 @@
         "type": "COMPONENT",
         "subtype": "pfet"
       },
-      "net11": {
+      "net18": {
         "type": "NET"
       },
-      "Vinp": {
+      "net11": {
         "type": "NET"
       },
       "Vinn": {
         "type": "NET"
       },
-      "gnd!": {
+      "Vbiasn0": {
         "type": "NET"
       },
-      "net18": {
+      "Vinp": {
         "type": "NET"
       },
       "net19": {
         "type": "NET"
       },
-      "Voutp": {
+      "vdd!": {
         "type": "NET"
       },
-      "vdd!": {
+      "gnd!": {
         "type": "NET"
       },
       "net13": {
@@ -62,7 +62,7 @@
       "net20": {
         "type": "NET"
       },
-      "Vbiasn0": {
+      "Voutp": {
         "type": "NET"
       }
     },

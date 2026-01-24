@@ -55,7 +55,7 @@ class EnvironmentConfig(object):
                 "testbenches": {
                     "ac_dc": {
                         "netlist_template": self.netlist_path,
-                        "tb_module": f"eval_engines.spectre.script_test.{self.type}_meas_man",
+                        "tb_module": f"simulator.eval_engines.spectre.measurements.{self.type}_meas_man",
                         "tb_class": "ACTB",
                         "post_process_function": "process_ac",
                         "tb_params": {}
@@ -175,7 +175,7 @@ class EnvironmentConfig(object):
         with open(self.yaml_path, "w") as f:
             yaml.dump(self.configs, f, default_flow_style=False, sort_keys=False)
 
-        print(f"YAML configuration written to {self.yaml_path}")
+        # print(f"YAML configuration written to {self.yaml_path}")
         return self.yaml_path
     
     def del_yaml(self):
@@ -192,7 +192,8 @@ class EnvironmentConfig(object):
         # check if YAML file exists and delete if present
         if os.path.exists(self.yaml_path):
             os.remove(self.yaml_path)
-            print(f"Deleted YAML file: {self.yaml_path}")
+            # print(f"Deleted YAML file: {self.yaml_path}")
         else:
-            print(f"YAML file does not exist: {self.yaml_path}")
+            # print(f"YAML file does not exist: {self.yaml_path}")
+            pass
     

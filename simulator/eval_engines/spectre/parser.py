@@ -19,7 +19,30 @@ import IPython
 import subprocess
 import tempfile
 import re
+from contextlib import contextmanager
 
+# ===== Context Managers ===== #
+
+@contextmanager
+def suppress_output():
+    """
+    Context manager to redirect stdout and stderr to /dev/null.
+    Useful for silencing C-level libraries (like libpsf) and verbose prints.
+    """
+    with open(os.devnull, "w") as devnull:
+        old_stdout = os.dup(sys.stdout.fileno())
+        old_stderr = os.dup(sys.stderr.fileno())
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(devnull.fileno(), sys.stdout.fileno())
+            os.dup2(devnull.fileno(), sys.stderr.fileno())
+            yield
+        finally:
+            os.dup2(old_stdout, sys.stdout.fileno())
+            os.dup2(old_stderr, sys.stderr.fileno())
+            os.close(old_stdout)
+            os.close(old_stderr)
 
 # ===== Constants ===== #
 
@@ -231,7 +254,10 @@ class SpectreParser(object):
         """
         folder_path = os.path.abspath(raw_folder)
         data = dict()
-        files =  os.listdir(folder_path)
+        try:
+            files =  os.listdir(folder_path)
+        except FileNotFoundError:
+            return data
         
         # iterate through all files in results folder
         for file in files:
@@ -249,18 +275,20 @@ class SpectreParser(object):
                 # export transient results to CSV handling single ended and differential cases
                 if not os.path.exists(output_csv_voutp):
                     try:
-                        print(f"Exporting {file_path} ...")
+                        # print(f"Exporting {file_path} ...")
                         try:
-                            ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=True)
+                            with suppress_output():
+                                ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=True)
                             has_voutn = True
                         except RuntimeError as e:
                             if "Voutn" in str(e):
-                                ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
+                                with suppress_output():
+                                    ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
                                 has_voutn = False
                             else:
                                 raise
                     except Exception as e:
-                        print(f"Failed to export {file}: {e}")
+                        # print(f"Failed to export {file}: {e}")
                         continue
                 else:
                     has_voutn = os.path.exists(output_csv_voutn)
@@ -274,7 +302,8 @@ class SpectreParser(object):
 
             # process PSF files
             try:
-                datum = cls.process_file(file_path)
+                with suppress_output():
+                    datum = cls.process_file(file_path)
             except FileNotCompatible:
                 continue
 

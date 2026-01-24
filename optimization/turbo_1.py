@@ -148,9 +148,9 @@ class Turbo1:
         self.min_cuda = min_cuda
         self.dtype = torch.float32 if dtype == "float32" else torch.float64
         self.device = torch.device("cuda") if device == "cuda" else torch.device("cpu")
-        if self.verbose:
-            print("Using dtype = %s \nUsing device = %s" % (self.dtype, self.device))
-            sys.stdout.flush()
+        # if self.verbose:
+        #     print("Using dtype = %s \nUsing device = %s" % (self.dtype, self.device))
+        #     sys.stdout.flush()
 
         # initialize parameters
         self._restart()

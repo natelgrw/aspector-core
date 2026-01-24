@@ -1,3 +1,10 @@
+Version **1.2.0**
+
+- Newly formatted CLI
+- Complete reorganization of codebase
+- Automated removal of heavy leftover simulation files after data extraction
+- Removal of absolute file paths for filesystem configs
+
 Version **1.1.0**
 
 Date Released: **1/22/2026**

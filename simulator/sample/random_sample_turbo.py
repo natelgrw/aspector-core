@@ -14,13 +14,13 @@ import numpy as np
 import os
 import json
 from collections import OrderedDict
-from working_current.turbo.turbo_1 import Turbo1
-from working_current.turbo.turbo_m import TurboM
-from working_current.turbo.netlist_to_graph import parse_netlist_to_graph, extract_sizing_map
+from optimization.turbo_1 import Turbo1
+from optimization.turbo_m import TurboM
+from simulator.eval_engines.util.netlist_to_graph import parse_netlist_to_graph, extract_sizing_map
 import numpy as np
-from working_current.eval_engines.spectre.script_test.single_ended_meas_man import *
-from working_current.eval_engines.spectre.specs_test.config_env import *
-import globalsy
+from simulator.eval_engines.spectre.script_test.single_ended_meas_man import *
+from simulator.eval_engines.spectre.specs_test.config_env import *
+from simulator import globalsy
 import re
 
 

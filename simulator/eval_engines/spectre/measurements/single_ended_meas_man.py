@@ -1,29 +1,32 @@
 """
-differential_meas_man.py
+single_ended_meas_man.py
 
 Author: natelgrw
-Last Edited: 01/08/2026
+Last Edited: 01/15/2026
 
-Measurement manager for processing and calculating 11 performance specs 
-for differential op-amp simulations.
+Measurement manager for processing and calculating performance specs 
+for single-ended op-amp simulations.
 """
 
-from eval_engines.spectre.core import EvaluationEngine
+from simulator.eval_engines.spectre.core import EvaluationEngine
 import numpy as np
+import pdb
+import IPython
 import scipy.interpolate as interp
 import scipy.optimize as sciopt
 import scipy.integrate as scint
-import globalsy
+import matplotlib.pyplot as plt
+from simulator import globalsy
 
 
-# ===== Differential Op-Amp Measurement Manager ===== #
+# ===== Single-Ended Op-Amp Measurement Manager ===== #
 
 
 class OpampMeasMan(EvaluationEngine):
     """
-    Measurement manager for differential op-amp simulations.
+    Measurement manager for single-ended op-amp simulations.
 
-    Supports the calculation of 11 performance specs:
+    Supports the calculation of performance specs including:
     - Gain
     - UGBW
     - Phase Margin
@@ -43,7 +46,7 @@ class OpampMeasMan(EvaluationEngine):
 
         EvaluationEngine.__init__(self, yaml_fname)
 
-    def get_specs(self, results_dict):
+    def get_specs(self, results_dict, params):
         """
         Constructs a cleaned specs dictionary from an input results dictionary.
 
@@ -51,19 +54,19 @@ class OpampMeasMan(EvaluationEngine):
         -----------
         results_dict: dict
             The raw results dictionary from simulations.
+        params: dict
+            Additional parameters for processing.
         
         Returns:
         --------
         specs_dict: dict
             The cleaned specs dictionary extracted from results.
         """
+        print("Results dict keys:", results_dict.keys())
         specs_dict = dict()
         ac_dc = results_dict['ac_dc']
-
-        # extracting specs from ac_dc results
         for _, res, _ in ac_dc:
             specs_dict = res
-
         return specs_dict
 
     def compute_penalty(self, spec_nums, spec_kwrd):
@@ -84,10 +87,7 @@ class OpampMeasMan(EvaluationEngine):
         """
         if type(spec_nums) is not list:
             spec_nums = [spec_nums]
-
         penalties = []
-
-        # compute penalties for each spec number
         for spec_num in spec_nums:
             penalty = 0
             spec_min, spec_max, w = self.spec_range[spec_kwrd]
@@ -98,7 +98,6 @@ class OpampMeasMan(EvaluationEngine):
                 if spec_num < spec_min:
                     penalty += w * abs(spec_num - spec_min) / abs(spec_min)
             penalties.append(penalty)
-
         return penalties
 
 
@@ -110,7 +109,7 @@ class ACTB(object):
     AC Analysis Trait Base for OpampMeasMan.
 
     Provides methods to process AC analysis results and compute 
-    11 performance specs from simulation data.
+    performance specs from simulation data.
     """
 
     @classmethod
@@ -138,17 +137,13 @@ class ACTB(object):
 
         noise_results = results["noise"]
 
-        tran_results_p = results["tran_voutp"]
-        tran_results_n = results["tran_voutn"]
-        tran_results = self.combine_tran(tran_results_p, tran_results_n)
+        tran_results = results["tran_voutp"]
 
         # common mode voltage 
         vcm = dc_results["cm"]
 
-        # differential output voltage
-        vout_diff_p = ac_result_diff['Voutp']
-        vout_diff_n = ac_result_diff['Voutn']
-        vout_diff = vout_diff_p - vout_diff_n
+        # single-ended output voltage
+        vout_diff = ac_result_diff['Voutp']
 
         # frequency vector
         freq = ac_result_diff['sweep_values']
@@ -184,7 +179,7 @@ class ACTB(object):
         integrated_noise = self.find_integrated_noise(noise_results)
         slew_rate = self.find_slew_rate(tran_results)
         settle_time = self.find_settle_time(tran_results)
-
+        
 
         results = dict(
             gain = gain,
@@ -211,12 +206,12 @@ class ACTB(object):
     @classmethod
     def find_dc_gain(self, vout_diff):
         """
-        Finds the DC gain from differential output voltage.
+        Finds the DC gain from single-ended output voltage.
 
         Parameters:
         -----------
         vout_diff: numpy array
-            The differential output voltage array from AC analysis.
+            The single-ended output voltage array from AC analysis.
         
         Returns:
         --------
@@ -228,14 +223,14 @@ class ACTB(object):
     @classmethod
     def find_ugbw(self, freq, vout_diff):
         """
-        Finds unity gain bandwidth (UGBW) from differential output voltage.
+        Finds unity gain bandwidth (UGBW) from single-ended output voltage.
 
         Parameters:
         -----------
         freq: numpy array
             The frequency array from AC analysis.
         vout_diff: numpy array
-            The differential output voltage array from AC analysis.
+            The single-ended output voltage array from AC analysis.
         
         Returns:
         --------
@@ -252,26 +247,26 @@ class ACTB(object):
             return freq[0], valid
 
     @classmethod
-    def find_phm(self, freq, vout_diff):
+    def find_phm(self, freq, vout):
         """
-        Finds phase margin (PM) from differential output voltage.
+        Finds phase margin (PM) from single-ended output voltage.
 
         Parameters:
         -----------
         freq: numpy array
             The frequency array from AC analysis.
-        vout_diff: numpy array
-            The differential output voltage array from AC analysis.
+        vout: numpy array
+            The single-ended output voltage array from AC analysis.
         
         Returns:
         --------
         pm: float
             The phase margin value. If UGBW is not found, returns -180.
         """
-        gain = np.abs(vout_diff)
+        gain = np.abs(vout)
 
         # calculate phase in degrees and unwrap
-        phase = np.angle(vout_diff, deg=True)
+        phase = np.angle(vout, deg=True)
         phase = np.unwrap(np.deg2rad(phase))
         phase = np.rad2deg(phase)
 
@@ -292,12 +287,12 @@ class ACTB(object):
     def find_cmrr(self, vout_diff, vout_cm):
         """
         Finds common mode rejection ratio (CMRR) from 
-        differential and common mode output voltages.
+        single-ended and common mode output voltages.
 
         Parameters:
         -----------
         vout_diff: numpy array
-            The differential output voltage array.
+            The single-ended output voltage array.
         vout_cm: numpy array
             The common mode output voltage array.
         
@@ -405,7 +400,7 @@ class ACTB(object):
         results: dict
             The raw results dictionary from simulations.
         vout_diff: numpy array
-            The differential output voltage array.
+            The single-ended output voltage array.
         allowed_deviation_pct: float
             The allowed percentage deviation from ideal linearity.
         
@@ -418,6 +413,7 @@ class ACTB(object):
         # find gain
         gain = self.find_dc_gain(vout_diff)
         if gain < 1:
+            # gain too small, linearity undefined
             return None
 
         dc_offsets, vouts = self.extract_dc_sweep(results)
@@ -427,13 +423,15 @@ class ACTB(object):
 
         slope_spline = spline.derivative(n=1)
 
+        # define a fine resolution grid
         fine_x = np.linspace(dc_offsets.min(), dc_offsets.max(), 2000)
         fine_slope = slope_spline(fine_x)
 
+        # find index closest to x = 0
         zero_idx = np.argmin(np.abs(fine_x - 0))
         slope_at_zero = fine_slope[zero_idx]
 
-        # integrating allowed deviation in slope
+        # allowed deviation in slope
         allowed_dev = abs(slope_at_zero) * (allowed_deviation_pct / 100.0)
 
         # expand left
@@ -540,6 +538,7 @@ class ACTB(object):
             if len(noise_array) != num_points:
                 raise ValueError(f"Expected 55 points for {key}, but got {len(noise_array)}")
 
+            # extract total noise PSD values per frequency point
             total_psd = np.array([entry[b'total'] for entry in noise_array])
 
             # integrate noise PSD vs frequency to get noise power (V^2)
@@ -548,29 +547,6 @@ class ACTB(object):
             total_integrated_noise += integrated_noise
 
         return total_integrated_noise
-    
-    @classmethod
-    def combine_tran(self, tranp_results, trann_results):
-        """
-        Combines positive and negative transient results into differential output.
-
-        Parameters:
-        -----------
-        tranp_results: list of tuples
-            Transient results for positive output (time, Voutp).
-        trann_results: list of tuples
-            Transient results for negative output (time, Voutn).
-        
-        Returns:
-        --------
-        combined_results: list of tuples
-            Combined transient results (time, Voutp - Voutn).
-        """
-        time = np.array([t for t, _ in tranp_results])
-        voutp = np.array([v for _, v in tranp_results])
-        voutn = np.array([v for _, v in trann_results])
-
-        return list(zip(time, voutp - voutn))
 
     @classmethod
     def find_slew_rate(self, tran_results):
@@ -592,14 +568,15 @@ class ACTB(object):
 
         # spline interpolation of Vout vs time
         spline = interp.CubicSpline(time, vout)
+
+        # create a fine time grid for derivative evaluation
         time_fine = np.linspace(time[0], time[-1], 50000)
 
-        # calculate derivative at fine points
+        # calculate derivative (slope) at fine points
         dv_dt = spline.derivative()(time_fine)
 
         # max absolute slope = slew rate
         slew_rate = np.max(np.abs(dv_dt))
-
         return slew_rate
 
     @classmethod
@@ -632,27 +609,29 @@ class ACTB(object):
 
         # spline interpolation of Vout vs time
         spline = interp.CubicSpline(time, vout)
+
+        # fine time grid for better resolution
         time_fine = np.linspace(time[0], time[-1], 50000)
         vout_fine = spline(time_fine)
 
-        # average of last 5% of samples
-        n_tail = max(5, len(vout_fine) // 20)
+        # final value: average of last 5% of samples
+        n_tail = max(5, len(vout_fine)//20)
         v_final = float(np.mean(vout_fine[-n_tail:]))
 
         lower, upper = v_final * (1 - tol), v_final * (1 + tol)
 
-        # Check where Vout enters the ±tol band
+        # check where Vout enters the ±tol band
         in_band = (vout_fine >= lower) & (vout_fine <= upper)
         stays_in = np.flip(np.cumprod(np.flip(in_band).astype(int)).astype(bool))
         idx = np.argmax(stays_in)
 
         if not stays_in[idx]:
-            return None 
+            return None  # never settled
 
         t_out = time_fine[idx]
 
         # fixed input 50% reference time
-        t_ref = (delay + width + change/2) * 1e9
+        t_ref = (delay + width + change/2) * 1e9  # 101.025 ns
 
         return max(0.0, t_out - t_ref)
 

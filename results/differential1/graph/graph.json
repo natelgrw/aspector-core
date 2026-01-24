@@ -1,5 +1,5 @@
 {
-  "topology_id": 3,
+  "topology_id": 1,
   "netlist": "differential1.scs",
   "graph": {
     "directed": false,
@@ -64,67 +64,67 @@
         "type": "COMPONENT",
         "subtype": "pfet"
       },
-      "Vinn": {
-        "type": "NET"
-      },
-      "vdd!": {
-        "type": "NET"
-      },
-      "net28": {
-        "type": "NET"
-      },
-      "Vinp": {
-        "type": "NET"
-      },
-      "Vbiasn1": {
-        "type": "NET"
-      },
-      "Vbiasp1": {
-        "type": "NET"
-      },
-      "net32": {
-        "type": "NET"
-      },
-      "gnd!": {
-        "type": "NET"
-      },
-      "Voutp": {
-        "type": "NET"
-      },
-      "net30": {
-        "type": "NET"
-      },
-      "Vbiasn2": {
-        "type": "NET"
-      },
-      "net31": {
-        "type": "NET"
-      },
-      "net35": {
-        "type": "NET"
-      },
       "Vbiasp0": {
         "type": "NET"
       },
-      "net37": {
-        "type": "NET"
-      },
-      "net36": {
-        "type": "NET"
-      },
-      "net29": {
-        "type": "NET"
-      },
-      "Voutn": {
+      "Vinn": {
         "type": "NET"
       },
       "net17": {
         "type": "NET"
       },
+      "net32": {
+        "type": "NET"
+      },
+      "net29": {
+        "type": "NET"
+      },
+      "Vinp": {
+        "type": "NET"
+      },
+      "net31": {
+        "type": "NET"
+      },
+      "vdd!": {
+        "type": "NET"
+      },
       "Vbiasp2": {
         "type": "NET"
       },
+      "net28": {
+        "type": "NET"
+      },
+      "Voutp": {
+        "type": "NET"
+      },
+      "gnd!": {
+        "type": "NET"
+      },
+      "net35": {
+        "type": "NET"
+      },
+      "Vbiasp1": {
+        "type": "NET"
+      },
       "net34": {
+        "type": "NET"
+      },
+      "net36": {
+        "type": "NET"
+      },
+      "net37": {
+        "type": "NET"
+      },
+      "Vbiasn1": {
+        "type": "NET"
+      },
+      "net30": {
+        "type": "NET"
+      },
+      "Voutn": {
+        "type": "NET"
+      },
+      "Vbiasn2": {
         "type": "NET"
       }
     },

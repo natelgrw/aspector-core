@@ -8,7 +8,7 @@ Measurement manager for processing and calculating performance specs
 for single-ended op-amp simulations.
 """
 
-from eval_engines.spectre.core import EvaluationEngine
+from simulator.eval_engines.spectre.core import EvaluationEngine
 import numpy as np
 import pdb
 import IPython
@@ -16,7 +16,7 @@ import scipy.interpolate as interp
 import scipy.optimize as sciopt
 import scipy.integrate as scint
 import matplotlib.pyplot as plt
-import globalsy
+from simulator import globalsy
 
 
 # ===== Single-Ended Op-Amp Measurement Manager ===== #

@@ -18,8 +18,8 @@ import yaml
 import importlib
 import random
 import numpy as np
-from eval_engines.util.core import IDEncoder, Design
-from eval_engines.spectre.parser import SpectreParser
+from simulator.eval_engines.utils.design_reps import IDEncoder, Design
+from simulator.eval_engines.spectre.parser import SpectreParser
 import shutil
 
 debug = False 
@@ -85,6 +85,10 @@ class SpectreWrapper(object):
         self.root_dir = self.config_info['BASE_TMP_DIR']
         self.num_process = self.config_info.get('NUM_PROCESS', 1)
 
+        # Calculate project root and lstp path relative to this file
+        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+        self.lstp_path = os.path.join(self.project_root, "lstp")
+
         # create unique design directory name
         _, dsn_netlist_fname = os.path.split(netlist_loc)
         self.base_design_name = os.path.splitext(dsn_netlist_fname)[0] + str(random.randint(0,10000))
@@ -145,7 +149,10 @@ class SpectreWrapper(object):
             Full path to the generated netlist file.
         """
         # render template with design parameters
-        output = self.template.render(**state)
+        render_context = state.copy()
+        render_context['lstp_path'] = self.lstp_path
+        
+        output = self.template.render(**render_context)
         design_folder = os.path.join(self.gen_dir, new_fname)
         os.makedirs(design_folder, exist_ok=True)
 
@@ -228,10 +235,19 @@ class SpectreWrapper(object):
         # post process results
         if self.post_process:
             specs = self.post_process(results, self.tb_params)
+            self._cleanup(design_folder)
             return state, specs, info
         specs = results
+        self._cleanup(design_folder)
         
         return state, specs, info
+
+    def _cleanup(self, design_folder):
+        """
+        Removes the generated design folder and all its contents to save space.
+        """
+        if os.path.exists(design_folder):
+            shutil.rmtree(design_folder)
 
     def _parse_result(self, design_folder):
         """
@@ -322,7 +338,7 @@ class EvaluationEngine(object):
         # load configuration from YAML file
         with open(yaml_fname, 'r') as f:
             self.ver_specs = yaml.load(f, Loader=yaml.Loader)
-            print("DEBUG ver_specs =", type(self.ver_specs), self.ver_specs)
+            # print("DEBUG ver_specs =", type(self.ver_specs), self.ver_specs)
         f.close()
 
         # extract specification ranges

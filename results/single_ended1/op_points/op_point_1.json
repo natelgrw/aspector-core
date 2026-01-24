@@ -5,52 +5,52 @@
   "operating_points": {
     "MM0": {
       "region_of_operation": 0.0,
-      "gm": 4.7e-11,
-      "ids": 1.25e-12,
-      "vds": 0.452,
-      "vgs": 0.0391
+      "gm": 4.37e-11,
+      "ids": 1.16e-12,
+      "vds": 0.404,
+      "vgs": 0.0379
     },
     "MM1": {
       "region_of_operation": 0.0,
-      "gm": 7.82e-11,
-      "ids": 2.03e-12,
-      "vds": 0.148,
-      "vgs": 0.087
+      "gm": 6.91e-11,
+      "ids": 1.8e-12,
+      "vds": 0.143,
+      "vgs": 0.0839
     },
     "MM2": {
       "region_of_operation": 0.0,
-      "gm": 7.37e-11,
-      "ids": 1.92e-12,
-      "vds": 0.087,
-      "vgs": 0.087
+      "gm": 6.5e-11,
+      "ids": 1.69e-12,
+      "vds": 0.0839,
+      "vgs": 0.0839
     },
     "MM3": {
       "region_of_operation": 0.0,
-      "gm": 4.54e-11,
-      "ids": 1.21e-12,
-      "vds": 0.391,
-      "vgs": 0.0391
+      "gm": 4.21e-11,
+      "ids": 1.12e-12,
+      "vds": 0.344,
+      "vgs": 0.0379
     },
     "MM4": {
       "region_of_operation": 0.0,
-      "gm": 4.05e-11,
-      "ids": 1.08e-12,
-      "vds": 0.461,
+      "gm": 3.94e-11,
+      "ids": 1.05e-12,
+      "vds": 0.412,
       "vgs": 0.0116
     },
     "MM5": {
       "region_of_operation": 1.0,
-      "gm": 1.84e-11,
-      "ids": 2.28e-12,
-      "vds": 1.23e-09,
-      "vgs": 0.622
+      "gm": 1.93e-11,
+      "ids": 2.06e-12,
+      "vds": 1.37e-09,
+      "vgs": 0.598
     },
     "MM6": {
       "region_of_operation": 1.0,
-      "gm": 1.16e-11,
-      "ids": 2e-12,
-      "vds": 7.13e-10,
-      "vgs": 0.683
+      "gm": 1.19e-11,
+      "ids": 1.8e-12,
+      "vds": 7.5e-10,
+      "vgs": 0.657
     }
   }
 }

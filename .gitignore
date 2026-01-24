@@ -6,3 +6,4 @@ build/
 
 *.log
 .cadence
+optimization/turbo_m.py
