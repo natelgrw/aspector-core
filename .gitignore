@@ -7,3 +7,4 @@ build/
 *.log
 .cadence
 optimization/turbo_m.py
+.DS_Store/
