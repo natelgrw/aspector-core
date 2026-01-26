@@ -172,13 +172,15 @@ class Extractor:
         Transistor size in nm.
     """
 
-    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map):
+    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, specs_weights, sim_flags, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map):
         
         self.dim = dim
         self.opt_params = opt_params        # Parameters being optimized (9)
         self.params_id = params_id          # All parameters for netlist (13)
         self.specs_id = specs_id
         self.specs_ideal = specs_ideal
+        self.specs_weights = specs_weights
+        self.sim_flags = sim_flags
         self.vcm = vcm
         self.vdd = vdd
         self.tempc = tempc
@@ -211,53 +213,53 @@ class Extractor:
             Normalized deviations for each specification. Positive = exceeds target,
             Negative = below target.
         """
-        goal_spec = [float(e) for e in goal_spec]
-        spec = [float(e) for e in spec]
-        spec = np.array(spec)
-        goal_spec = np.array(goal_spec)
+        norm_specs = []
+        for s, g in zip(spec, goal_spec):
+            # Check for range measurement (tuple/list of length 2)
+            if isinstance(s, (list, tuple, np.ndarray)) and len(s) == 2:
+                 # Check if target is also a range
+                 if isinstance(g, (list, tuple, np.ndarray)) and len(g) == 2:
+                     # Containment Optimization
+                     val_min = (g[0] - s[0]) / (abs(g[0]) + abs(s[0]) + 1e-9)
+                     val_max = (s[1] - g[1]) / (abs(g[1]) + abs(s[1]) + 1e-9)
+                     norm_specs.append(min(val_min, val_max))
+                 else:
+                     # Width Optimization
+                     width_s = abs(s[1] - s[0])
+                     width_g = float(g)
+                     val = (width_s - width_g) / (abs(width_g) + abs(width_s) + 1e-9)
+                     norm_specs.append(val)
+            else:
+                 # Scalar Optimization
+                 s_val = float(s) if s is not None else 0.0
+                 g_val = float(g)
+                 val = (s_val - g_val) / (abs(g_val) + abs(s_val) + 1e-9)
+                 norm_specs.append(val)
 
-        # normalized deviation calculation
-        norm_spec = (spec-goal_spec)/(np.abs(goal_spec)+np.abs(spec))
+        return np.array(norm_specs)
 
-        return norm_spec
-
-    def reward(self, spec, goal_spec, specs_id):
+    def reward(self, spec, goal_spec, specs_id, specs_weights):
         """
         Calculate the penalty-based reward (cost) from specifications.
-
-        Converts specification deviations to a scalar reward score suitable for
-        minimization. Penalties are weighted by specification importance:
-        - Gain: 50x (critical for amplification)
-        - UGBW: 30x (critical for bandwidth)
-        - PM: 30x (critical for stability)
-        - CMRR: 10x (important for rejection)
-        - Power: 1x (secondary objective)
-
-        Parameters:
-        -----------
-        spec : list or numpy array
-            Measured specification values.
-        goal_spec : list or numpy array
-            Target specification values.
-        specs_id : list
-            Specification identifiers (names).
-        
-        Returns:
-        --------
-        float
-            Total penalty score (weighted deviations). Lower is better.
         """
         rel_specs = self.lookup(spec, goal_spec)
         reward = 0
+        
+        # Define Optimization Direction (Maximize vs Minimize)
+        # Minimize: Penalty if rel_spec > 0 (Measured > Target). 
+        # Maximize: Penalty if rel_spec < 0 (Measured < Target).
+        minimize_specs = ["power", "integrated_noise", "settling_time", "vos"]
+        
         for i, rel_spec in enumerate(rel_specs):
-            if specs_id[i] == "power" and rel_spec > 0:
-                reward += np.abs(rel_spec)
-            elif specs_id[i] == "gain" and rel_spec < 0:
-                reward += 50.0 * np.abs(rel_spec)
-            elif specs_id[i] == "UGBW" and rel_spec < 0:
-                reward += 10.0 * np.abs(rel_spec)
-            elif specs_id[i] == "PM" and rel_spec < 0:
-                reward += 10.0 * np.abs(rel_spec)
+            s_name = specs_id[i]
+            s_weight = specs_weights[i]
+            
+            if s_name in minimize_specs:
+                if rel_spec > 0: # Bad
+                    reward += s_weight * np.abs(rel_spec)
+            else: # Maximize (gain, ugbw, pm, cmrr, etc.)
+                if rel_spec < 0: # Bad
+                    reward += s_weight * np.abs(rel_spec)
 
         return reward
 
@@ -319,6 +321,13 @@ class Extractor:
             elif pname.startswith("fet_num"):
                 full_params[pname] = self.fet_num
     
+        # Inject Simulation Control Flags dependent on user selection
+        # These are passed to the Jinja2 template to conditionally include analysis blocks
+        full_params["run_ac"]    = 1 if self.sim_flags['ac'] else 0
+        full_params["run_dc"]    = 1 if self.sim_flags['dc'] else 0
+        full_params["run_noise"] = 1 if self.sim_flags['noise'] else 0
+        full_params["run_tran"]  = 1 if self.sim_flags['tran'] else 0
+
         param_val = [OrderedDict(full_params)]
 
         # calls evaluate() to obtain simulation specs and sort them
@@ -335,13 +344,20 @@ class Extractor:
         
         cur_specs = OrderedDict(sorted(eval_result[0][1].items(), key=lambda k:k[0]))
         
-        val_gain = cur_specs.get('gain', 0)
-        val_ugbw = cur_specs.get('funity', 0)
-        val_pm   = cur_specs.get('pm', 0)
-        val_pwr  = cur_specs.get('power', 0) # usually negative in results
+        # Construct Spec Vector matching the Optimizer's ID list
+        reward_input = []
+        for s_name in self.specs_id:
+            val = cur_specs.get(s_name)
+            if val is None:
+                 # Logic for missing specs (e.g. if simulation didn't run effectively)
+                 # Assign a terrible value to discourage this region or indicate failure
+                 if s_name in ["power", "integrated_noise", "settling_time", "vos"]:
+                     val = 1e9 # High value bad
+                 else:
+                     val = -1e9 # Low value bad
+            reward_input.append(val)
         
-        reward_input = [val_gain, val_ugbw, val_pm, val_pwr]
-        reward1 = self.reward(reward_input, self.specs_ideal, self.specs_id)
+        reward1 = self.reward(reward_input, self.specs_ideal, self.specs_id, self.specs_weights)
 
         # Build structured sizing from map
         structured_sizing = {}

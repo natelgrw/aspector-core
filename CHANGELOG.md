@@ -1,4 +1,13 @@
+Version **1.3.0**
+
+Date Released: **01/26/2026**
+
+- Customization of specs extracted from simulation
+- Customization of optimization specs and weights
+
 Version **1.2.0**
+
+Date Released: **01/24/2026**
 
 - Newly formatted CLI
 - Complete reorganization of codebase
@@ -7,7 +16,7 @@ Version **1.2.0**
 
 Version **1.1.0**
 
-Date Released: **1/22/2026**
+Date Released: **01/22/2026**
 
 - Netlist -> Graph script integration
 - Revamped data collection pipeline with formatted `json` output

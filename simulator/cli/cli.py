@@ -4,7 +4,7 @@ cli.py
 Author: natelgrw
 Last Edited: 01/24/2026
 
-Command Line Interface for TITAN Foundation Model.
+Command Line Interface for ASPECTOR Core.
 Provides interactive setup for running circuit optimization pipelines.
 """
 
@@ -240,6 +240,82 @@ def main():
         max_val=10000
     )
 
+    # 4b. Specification Selection
+    print_section("Specification Selection")
+    
+    # Defaults from globalsy (metadata: value, weight, sim_type)
+    defaults = globalsy.spec_metadata
+    
+    # 1. Select Measurements
+    print(" Select specifications to MEASURE (available for viewing):")
+    measured_specs = []
+    
+    # Group by simulation type for clarity
+    sim_types = {0: "AC", 1: "DC", 2: "NOISE", 3: "TRANSIENT"}
+    grouped_specs = {}
+    for k, v in defaults.items():
+        st = v[2]
+        if st not in grouped_specs: grouped_specs[st] = []
+        grouped_specs[st].append(k)
+        
+    for st_code in sorted(grouped_specs.keys()):
+        print(f" -- {sim_types[st_code]} Analysis --")
+        for spec in grouped_specs[st_code]:
+            while True:
+                ans = input(f"    Measure '{spec}'? [y/N]: ").strip().lower()
+                if ans == 'y':
+                    measured_specs.append(spec)
+                    break
+                elif ans == 'n' or ans == '':
+                    break
+    
+    if not measured_specs:
+        print_error("No specs selected. Selecting 'gain' and 'power' by default.")
+        measured_specs = ['gain', 'power']
+
+    # 2. Select Optimization Targets
+    print("\n Select specifications to OPTIMIZE (from measured):")
+    optimized_specs = []
+    specs_ideal = {}
+    specs_weights = {}
+    
+    for spec in measured_specs:
+        while True:
+            ans = input(f"    Optimize '{spec}'? [y/N]: ").strip().lower()
+            if ans == 'y':
+                optimized_specs.append(spec)
+                
+                # Get Target
+                def_val = defaults[spec][0]
+                val_in = input(f"       Target Value [{def_val}]: ").strip()
+                specs_ideal[spec] = float(val_in) if val_in else def_val
+                
+                # Get Weight
+                def_w = defaults[spec][1]
+                w_in = input(f"       Weight [{def_w}]: ").strip()
+                specs_weights[spec] = float(w_in) if w_in else def_w
+                break
+            elif ans == 'n' or ans == '':
+                break
+
+    if not optimized_specs:
+        print_error("No optimization specs selected. Defaulting to first measured spec.")
+        s = measured_specs[0]
+        optimized_specs.append(s)
+        specs_ideal[s] = defaults[s][0]
+        specs_weights[s] = defaults[s][1]
+
+    # Determine required simulations
+    sim_flags = {'ac': False, 'dc': False, 'noise': False, 'tran': False}
+    for spec in measured_specs:
+        st = defaults[spec][2]
+        if st == 0: sim_flags['ac'] = True
+        elif st == 1: sim_flags['dc'] = True
+        elif st == 2: sim_flags['noise'] = True
+        elif st == 3: sim_flags['tran'] = True
+
+    print(f"\n {Style.CHECK} Configured Simulations: {[k.upper() for k,v in sim_flags.items() if v]}")
+
     # 5. Pipeline Execution Setup
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
     results_dir = os.path.join(project_root, "results", netlist_name_base)
@@ -264,7 +340,7 @@ def main():
     
     # Load specs from global config (could be made dynamic later)
     # Ensure these exist in your globalsy.py
-    specs_dict = globalsy.specs_dict 
+    # specs_dict = globalsy.specs_dict 
     shared_ranges = globalsy.shared_ranges
 
     params_id = extract_parameter_names(scs_file_path)
@@ -274,11 +350,19 @@ def main():
 
     opamp_type = classify_opamp_type(scs_file_path)
     
-    # reformatted specs for optimizer input
-    specs_id = list(specs_dict.keys())
-    specs_ideal = list(specs_dict.values())
+    # reformatted specs for extractor input (using OPTIMIZED specs)
+    specs_id = optimized_specs
+    specs_ideal_list = [specs_ideal[s] for s in specs_id]
+    specs_weights_list = [specs_weights[s] for s in specs_id]
 
-    config_env = EnvironmentConfig(scs_file_path, opamp_type, specs_dict, params_id, full_lb, full_ub)
+    # For EnvironmentConfig, we pass measured specs so the meas_man knows what to look for
+    # (Though currently meas_man might look for everything hardcoded, passing empty dict might break it 
+    # if it relies on keys, so let's pass dummy targets for measured specs not in optimizer)
+    env_specs = {}
+    for s in measured_specs:
+        env_specs[s] = specs_ideal.get(s, 0.0) # 0.0 or default if not optimized
+
+    config_env = EnvironmentConfig(scs_file_path, opamp_type, env_specs, params_id, full_lb, full_ub)
     yaml_path = config_env.write_yaml_configs()
 
     extractor = Extractor(
@@ -286,7 +370,9 @@ def main():
         opt_params=opt_params,
         params_id=params_id,
         specs_id=specs_id,
-        specs_ideal=specs_ideal,
+        specs_ideal=specs_ideal_list,
+        specs_weights=specs_weights_list, # New Arg
+        sim_flags=sim_flags,              # New Arg
         vcm=vcm,
         vdd=vdd,
         tempc=tempc,

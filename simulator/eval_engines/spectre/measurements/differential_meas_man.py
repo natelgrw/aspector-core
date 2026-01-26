@@ -188,7 +188,7 @@ class ACTB(object):
 
         results = dict(
             gain = gain,
-            funity = ugbw,
+            ugbw = ugbw,
             pm = phm,
             power = power,
             vos = vos,

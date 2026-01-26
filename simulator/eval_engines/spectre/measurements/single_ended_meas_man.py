@@ -129,70 +129,126 @@ class ACTB(object):
         specs: dict 
             A cleaned specs dictionary with computed performance specifications.
         """
-        # AC, DC, noise, and transient raw extraction
-        ac_result_diff = results['acswp-000_ac']
-        ac_result_cm = results['acswp-001_ac']
+        # --- Safely Extract Results ---
+        # Returns None if simulation block was skipped or failed
+        
+        # AC Analysis (Differential and Common Mode)
+        ac_result_diff = results.get('acswp-000_ac')
+        ac_result_cm   = results.get('acswp-001_ac')
 
-        dc_results = results['dcswp-500_dcOp']
+        # DC Operating Point (at zero offset, index 500)
+        dc_results     = results.get('dcswp-500_dcOp')
 
-        noise_results = results["noise"]
+        # Noise Analysis
+        noise_results  = results.get('noise')
 
-        tran_results = results["tran_voutp"]
+        # Transient Analysis
+        tran_results   = results.get('tran_voutp')
 
-        # common mode voltage 
-        vcm = dc_results["cm"]
-
-        # single-ended output voltage
-        vout_diff = ac_result_diff['Voutp']
-
-        # frequency vector
-        freq = ac_result_diff['sweep_values']
-
-        # Extract MM transistor metrics
+        # --- Initialize Specs ---
+        # Default to None if not computed
+        vos = None
+        gain = None
+        ugbw = None
+        phm = None
+        power = None
+        cmrr = None
+        linearity = None
+        output_voltage_swing = None
+        integrated_noise = None
+        slew_rate = None
+        settle_time = None
+        
+        # Auxiliary MM metrics
         ids_MM = {}
         gm_MM = {}
         vgs_MM = {}
         vds_MM = {}
         region_MM = {}
-
-        for comp, val in dc_results.items():
-            if comp.startswith("MM") and comp.endswith("ids"):
-                ids_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-            elif comp.startswith("MM") and comp.endswith("gm"):
-                gm_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-            elif comp.startswith("MM") and comp.endswith("vgs"):
-                vgs_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-            elif comp.startswith("MM") and comp.endswith("vds"):
-                vds_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-            elif comp.startswith("MM") and comp.endswith("region"):
-                region_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-
-        # compute performance specs
-        vos = self.find_vos(results, vcm)
-        gain = self.find_dc_gain(vout_diff)
-        ugbw, valid = self.find_ugbw(freq, vout_diff)
-        phm = self.find_phm(freq, vout_diff)
-        power = -dc_results['V0:p']
-        cmrr = self.find_cmrr(vout_diff, ac_result_cm['Voutp'])
-        linearity = self.find_linearity(results, vout_diff)
-        output_voltage_swing = self.find_output_voltage_swing(results, vcm)
-        integrated_noise = self.find_integrated_noise(noise_results)
-        slew_rate = self.find_slew_rate(tran_results)
-        settle_time = self.find_settle_time(tran_results)
         
+        valid = False
 
+        # --- Compute Specs if Data Available ---
+
+        # 1. DC Processing
+        if dc_results:
+            # common mode voltage 
+            vcm = dc_results.get("cm", 0.0) # Default if 'cm' missing?
+            power = -dc_results.get('V0:p', 0.0)
+            
+            # Extract MM transistor metrics
+            for comp, val in dc_results.items():
+                if comp.startswith("MM") and comp.endswith("ids"):
+                    ids_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
+                elif comp.startswith("MM") and comp.endswith("gm"):
+                    gm_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
+                elif comp.startswith("MM") and comp.endswith("vgs"):
+                    vgs_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
+                elif comp.startswith("MM") and comp.endswith("vds"):
+                    vds_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
+                elif comp.startswith("MM") and comp.endswith("region"):
+                    region_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
+                    
+            # Compute specs requiring DC Sweep context but maybe distinct logic?
+            # 'output_voltage_swing' usually comes from the DC sweep curve, not just OpPoint
+            # 'find_output_voltage_swing' usually iterates results.
+            # Wait, process_ac passes 'results' (the whole dict) to find_output_voltage_swing
+            output_voltage_swing = self.find_output_voltage_swing(results, vcm)
+            vos = self.find_vos(results, vcm)
+            
+            if ac_result_diff:
+                 linearity_range = self.find_linearity(results, ac_result_diff['Voutp'])
+                 
+                 # Scalarize ranges for optimization
+                 if linearity_range and isinstance(linearity_range, (list, tuple)) and len(linearity_range) == 2:
+                     # linearity = abs(linearity_range[1] - linearity_range[0])
+                     linearity = linearity_range
+                 else:
+                     # linearity = 0.0 # Define behavior if undefined
+                     linearity = (0.0, 0.0)
+
+                 if output_voltage_swing and isinstance(output_voltage_swing, (list, tuple)) and len(output_voltage_swing) == 2:
+                     # output_voltage_swing = abs(output_voltage_swing[1] - output_voltage_swing[0])
+                     output_voltage_swing = output_voltage_swing
+                 else:
+                     # Handle case where output_voltage_swing might be None or scalar already, primarily expecting None if failed
+                     if output_voltage_swing is None:
+                        output_voltage_swing = (0.0, 0.0)
+
+        # 2. AC Processing
+        if ac_result_diff:
+             vout_diff = ac_result_diff['Voutp']
+             freq = ac_result_diff['sweep_values']
+             
+             gain = self.find_dc_gain(vout_diff)
+             ugbw, valid = self.find_ugbw(freq, vout_diff)
+             phm = self.find_phm(freq, vout_diff)
+             
+             if ac_result_cm:
+                 cmrr = self.find_cmrr(vout_diff, ac_result_cm['Voutp'])
+
+        # 3. Noise Processing
+        if noise_results:
+            integrated_noise = self.find_integrated_noise(noise_results)
+
+        # 4. Transient Processing
+        if tran_results:
+            slew_rate = self.find_slew_rate(tran_results)
+            settle_time = self.find_settle_time(tran_results)
+
+        # Standardize keys to match globalsy.py
         results = dict(
             gain = gain,
-            funity = ugbw,
+            ugbw = ugbw, # Was funity
             pm = phm,
             power = power,
             vos = vos,
             cmrr = cmrr,
-            linearity = linearity,
-            output_voltage_swing = output_voltage_swing,
+            linearity = linearity, # Was linearity
+            output_voltage_swing = output_voltage_swing, # Was output_voltage_swing
             integrated_noise = integrated_noise,
             slew_rate = slew_rate,
-            settle_time = settle_time,
+            settle_time = settle_time, # Was settle_time
             valid = valid,
             zregion_of_operation_MM = region_MM,
             zzgm_MM = gm_MM,

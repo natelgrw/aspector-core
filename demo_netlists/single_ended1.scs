@@ -65,22 +65,30 @@ simulatorOptions options rawfmt=psfbin psfversion="1.4.0" reltol=1e-3 vabstol=1e
     sensfile="../psf/sens.output" checklimitdest=psf 
 
 *---Noise Simulation---
+{% if run_noise %}
 noise (Voutp 0) noise start=1M stop=500M dec=20 iprobe=V2 annotate=status
+{% endif %}
 
 *---AC Sweep---
+{% if run_ac %}
 acswp sweep param=gain_n start=-0.5 stop=0.5 step=1 {
     ac ac start=1 stop=100G dec=10 annotate=status
 }
+{% endif %}
 
 *---DC Sweep---
+{% if run_dc %}
 dcswp sweep param=dc_offset start=-0.5 stop=0.5 step=0.001 {
     dcOp dc write="spectre.dc" maxiters=150 maxsteps=10000 annotate=status
 }
+{% endif %}
 
 *---Transient Sweep---
+{% if run_tran %}
 transwp sweep param=use_tran values=[1] {
     mytran tran stop=200n step=5p annotate=status
 }
+{% endif %}
 
 dcOpInfo info what=oppoint where=rawfile
 modelParameter info what=models where=rawfile

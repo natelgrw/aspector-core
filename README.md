@@ -2,20 +2,13 @@
 
 A Cadence Spectre simulation pipeline for op-amp netlists. Used as part of the ASPECTOR analog design suite to extract performance data for dataset construction.
 
-Current Version: **1.2.0**
+Current Version: **1.3.0**
 
 ## ⚡ Current Features
 
-ASPECTOR Core boasts a sleek, comprehensive terminal CLI to extract simulation data.
+ASPECTOR Core boasts a sleek, comprehensive terminal CLI to specify means of simulation, optimization, and extraction of performance data.
 
-A TuRBO algorithm is used to optimize sizing, bias, and environment parameters of op-amp Spectre netlists according to 4 performance specs:  
-
-- Gain  
-- Unity-Gain Bandwidth (UGBW)  
-- Phase Margin (PM)  
-- Power  
-
-While simulations compute 11 performance specs in addition to operating point data:  
+A TuRBO algorithm is used to optimize sizing, bias, and environment parameters of op-amp Spectre netlists to meet up to 11 target performance specs:
 
 - Gain  
 - Unity-Gain Bandwidth (UGBW)

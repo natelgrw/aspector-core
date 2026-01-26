@@ -245,9 +245,13 @@ class SpectreWrapper(object):
     def _cleanup(self, design_folder):
         """
         Removes the generated design folder and all its contents to save space.
+        Uses ignore_errors=True to avoid crashing on NFS holdover files (.nfs*).
         """
         if os.path.exists(design_folder):
-            shutil.rmtree(design_folder)
+            try:
+                shutil.rmtree(design_folder, ignore_errors=True)
+            except Exception as e:
+                print(f"Warning: Failed to cleanup {design_folder}: {e}")
 
     def _parse_result(self, design_folder):
         """
