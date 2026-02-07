@@ -1,3 +1,12 @@
+Version **1.4.0**
+
+Date Released: **02/06/2026**
+
+- Complete redesign of op-amp netlist testbenches
+- Corrected spec measurement and extraction functions
+- New search algorithms implemented to explore design space, including Sobol, LHS, and more
+- Updated simulation and data extraction pipeline accomodating new testbench
+
 Version **1.3.0**
 
 Date Released: **01/26/2026**

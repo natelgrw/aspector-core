@@ -27,22 +27,23 @@ from contextlib import contextmanager
 def suppress_output():
     """
     Context manager to redirect stdout and stderr to /dev/null.
-    Useful for silencing C-level libraries (like libpsf) and verbose prints.
+    [DISABLED] Useful for silencing C-level libraries (like libpsf) and verbose prints.
     """
-    with open(os.devnull, "w") as devnull:
-        old_stdout = os.dup(sys.stdout.fileno())
-        old_stderr = os.dup(sys.stderr.fileno())
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.dup2(devnull.fileno(), sys.stdout.fileno())
-            os.dup2(devnull.fileno(), sys.stderr.fileno())
-            yield
-        finally:
-            os.dup2(old_stdout, sys.stdout.fileno())
-            os.dup2(old_stderr, sys.stderr.fileno())
-            os.close(old_stdout)
-            os.close(old_stderr)
+    yield
+    # with open(os.devnull, "w") as devnull:
+    #     old_stdout = os.dup(sys.stdout.fileno())
+    #     old_stderr = os.dup(sys.stderr.fileno())
+    #     try:
+    #         sys.stdout.flush()
+    #         sys.stderr.flush()
+    #         os.dup2(devnull.fileno(), sys.stdout.fileno())
+    #         os.dup2(devnull.fileno(), sys.stderr.fileno())
+    #         yield
+    #     finally:
+    #         os.dup2(old_stdout, sys.stdout.fileno())
+    #         os.dup2(old_stderr, sys.stderr.fileno())
+    #         os.close(old_stdout)
+    #         os.close(old_stderr)
 
 # ===== Constants ===== #
 
@@ -280,23 +281,40 @@ class SpectreParser(object):
                             with suppress_output():
                                 ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=True)
                             has_voutn = True
-                        except RuntimeError as e:
-                            if "Voutn" in str(e):
-                                with suppress_output():
-                                    ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
-                                has_voutn = False
-                            else:
-                                raise
+                        except RuntimeError:
+                            # Fallback: Assume failure might be due to missing Voutn
+                            with suppress_output():
+                                ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
+                            has_voutn = False
                     except Exception as e:
                         # print(f"Failed to export {file}: {e}")
                         continue
                 else:
                     has_voutn = os.path.exists(output_csv_voutn)
 
-                parse_ocean_csv(output_csv_voutp, "tran_voutp", data)
+                # parse ocean csv data
+                tran_data = [] # List of (time, voltage) tuples
+                parse_ocean_csv(output_csv_voutp, "temp_key", { "temp_key": tran_data })
+                
+                # Convert list of tuples to dictionary of lists
+                tran_dict = {}
+                if tran_data:
+                    times, vouts = zip(*tran_data)
+                    tran_dict['time'] = list(times)
+                    tran_dict['Voutp'] = list(vouts)
+                else:
+                    tran_dict['time'] = []
+                    tran_dict['Voutp'] = []
 
                 if has_voutn and os.path.exists(output_csv_voutn):
-                    parse_ocean_csv(output_csv_voutn, "tran_voutn", data)
+                     tran_data_n = []
+                     parse_ocean_csv(output_csv_voutn, "temp_key", { "temp_key": tran_data_n })
+                     
+                     if tran_data_n:
+                         _, vouts_n = zip(*tran_data_n) # assume times match
+                         tran_dict['Voutn'] = list(vouts_n)
+                
+                data[base_name] = tran_dict
 
                 continue
 

@@ -62,95 +62,46 @@ class EnvironmentConfig(object):
                     }
                 }
             },
-            "params": {},
-            "spec_range": {},
-            "normalize": {},
+            # "params": {},
+            # Removed optimization-specific fields
             "target_specs": {}
         }
         
-        # initialize tracking lists and dictionaries
-        self.spec_ranges = []
-        self.normalized_list = []
         self.param_dict = {}
         self.yaml_path = ""
 
     def build_specs(self):
         """
-        Build specification ranges and normalized values.
-
-        Processes the target specifications dictionary and creates spec ranges
-        for optimization. Phase Margin (PM) gets fixed range around target,
-        while other specs get logarithmic ranges.
-
-        Returns:
-        --------
-        None
-            Modifies self.spec_ranges and self.normalized_list in place.
+        Build specification dictionary.
+        Simpliefied to remove normalization and ranges for optimization.
         """
-        # iterate through all target specifications
+        # Simply map specs to target_specs
         for spec, val in self.specs.items():
             val = float(val)
             self.configs["target_specs"][spec] = (val,)
-        
-            if spec == "PM":
-                self.spec_ranges.append((val - 30, val + 30, 1))
-                self.normalized_list.append(1)
-            else:
-                self.spec_ranges.append((val / 10, val * 10, val / 100))
-                self.normalized_list.append(val / 100)
 
     def build_params(self):
         """
-        Build parameter bounds dictionary with step sizes.
-
-        Creates a mapping of parameter names to (lower_bound, upper_bound, step_size)
-        tuples. Step sizes are determined based on parameter type:
-        - Biasing and supply parameters: step = 1
-        - Current-type parameters (nA*): step = lb/10
-        - Bias voltage parameters: step = 0.01
-        - Resistance/Capacitance parameters: step = lb/100
-
-        Returns:
-        --------
-        None
-            Modifies self.param_dict in place.
+        Build parameter bounds dictionary.
+        Removed step size calculation for grid optimization.
+        Stores (lower_bound, upper_bound) only.
         """
         for i in range(len(self.params)):
             param = self.params[i]
             lb = float(self.param_lbs[i])
             ub = float(self.param_ubs[i])
             
-            # supply voltages, common-mode, temperature: fixed step of 1
-            if self.params[i] in ["vdd", "vcm", "tempc"] or self.params[i].startswith("nB"):
-                self.param_dict[param] = (lb, ub, 1)
-            # current parameters: step = 10% of lower bound
-            elif self.params[i].startswith("nA"):
-                self.param_dict[param] = (lb, ub, lb / 10)
-            # bias voltage parameters: fixed small step
-            elif self.params[i].startswith("vbias"):
-                self.param_dict[param] = (lb, ub, 0.01)
-            # resistance and capacitance parameters: step = 1% of lower bound
-            elif self.params[i].startswith(("nR", "nC")):
-                self.param_dict[param] = (lb, ub, lb / 100)
+            self.param_dict[param] = (lb, ub)
 
     def build_configs(self):
         """
         Build complete configuration dictionary.
-
-        Orchestrates the building of specs and params, then populates the
-        configuration dictionary with all processed values.
-
-        Returns:
-        --------
-        None
-            Modifies self.configs in place with all parameter and spec information.
         """
         self.build_specs()
-        self.build_params()
-
-        self.configs["params"] = self.param_dict
-        self.configs["spec_range"] = self.spec_ranges
-        self.configs["normalize"] = self.normalized_list
+        # self.build_params() # Disabled per user request to remove 'params' dump
+        
+        # self.configs["params"] = self.param_dict # Disabled
+        # self.configs["params"] = {} # Empty dict to maintain structure if needed
 
     def write_yaml_configs(self):
         """

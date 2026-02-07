@@ -2,8 +2,10 @@ import re
 import json
 import os
 
-def parse_netlist_to_graph(netlist_path, output_dir, topology_id=1):
+def parse_netlist_to_graph(netlist_path, output_dir, sim_id=1, topology_id=None):
     netlist_name = os.path.basename(netlist_path)
+    if topology_id is None:
+        topology_id = os.path.splitext(netlist_name)[0]
     
     components = []
     nets = set()
@@ -59,7 +61,7 @@ def parse_netlist_to_graph(netlist_path, output_dir, topology_id=1):
 
         elif name.lower().startswith('r'):
             # Filter TESTBENCH resistors
-            if any(k in name for k in ['Rin', 'Rfeed', 'Rload']):
+            if any(k in name for k in ['Rin', 'Rfeed', 'Rload', 'Rsw', 'Rsrc', 'Rshunt', 'R_unity']):
                 continue
                 
             comp_type = 'resistor'
@@ -117,6 +119,7 @@ def parse_netlist_to_graph(netlist_path, output_dir, topology_id=1):
         })
         
     graph_obj = {
+        "sim_id": sim_id,
         "topology_id": topology_id,
         "netlist": netlist_name,
         "graph": {
@@ -172,7 +175,7 @@ def extract_sizing_map(netlist_path):
             # Using tuple for startswith is cleaner
             if name.upper().startswith(('M', 'R', 'C')):
                 # Filter Testbench artifacts
-                if any(tb in name for tb in ['Rin', 'Rfeed', 'Rload', 'Ctran', 'Cload']):
+                if any(tb in name for tb in ['Rin', 'Rfeed', 'Rload', 'Ctran', 'Cload', 'Rsw', 'Rsrc', 'Rshunt', 'R_unity']):
                     continue
                     
                 # Scan for parameters

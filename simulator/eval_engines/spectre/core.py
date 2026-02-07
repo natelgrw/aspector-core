@@ -12,15 +12,17 @@ cost function evaluation for iterative circuit optimization.
 import os
 from jinja2 import Environment, FileSystemLoader
 import os
+import shutil
 import subprocess
 from multiprocessing.dummy import Pool as ThreadPool
 import yaml
 import importlib
 import random
 import numpy as np
-from simulator.eval_engines.utils.design_reps import IDEncoder, Design
+import uuid
+import time
+import gc
 from simulator.eval_engines.spectre.parser import SpectreParser
-import shutil
 
 debug = False 
 
@@ -91,7 +93,8 @@ class SpectreWrapper(object):
 
         # create unique design directory name
         _, dsn_netlist_fname = os.path.split(netlist_loc)
-        self.base_design_name = os.path.splitext(dsn_netlist_fname)[0] + str(random.randint(0,10000))
+        # Use UUID to ensure unique design directory for every instance/process
+        self.base_design_name = os.path.splitext(dsn_netlist_fname)[0] + "_" + uuid.uuid4().hex
         self.gen_dir = os.path.join(self.root_dir, "designs_" + self.base_design_name)
 
         os.makedirs(self.gen_dir, exist_ok=True)
@@ -150,6 +153,15 @@ class SpectreWrapper(object):
         """
         # render template with design parameters
         render_context = state.copy()
+        
+        # Ensure Critical Environment Variables are set!
+        # If they came in via state, they are already there.
+        # If not, we should probably set defaults, but ideally 
+        # they must be in 'state' from the generator.
+        
+        # NOTE: Jinja templates fail silently sometimes or create invalid netlists
+        # if variables are missing.
+        
         render_context['lstp_path'] = self.lstp_path
         
         output = self.template.render(**render_context)
@@ -229,29 +241,34 @@ class SpectreWrapper(object):
 
         # create netlist from template and run simulation
         design_folder, fpath = self._create_design(state, dsn_name)
-        info = self._simulate(fpath)
-        results = self._parse_result(design_folder)
         
-        # post process results
-        if self.post_process:
-            specs = self.post_process(results, self.tb_params)
-            self._cleanup(design_folder)
+        try:
+            info = self._simulate(fpath)
+            results = self._parse_result(design_folder)
+            
+            # post process results
+            if self.post_process:
+                specs = self.post_process(results, state)
+                return state, specs, info
+            specs = results
+            
             return state, specs, info
-        specs = results
-        self._cleanup(design_folder)
-        
-        return state, specs, info
+        finally:
+            self._cleanup(design_folder)
 
     def _cleanup(self, design_folder):
         """
         Removes the generated design folder and all its contents to save space.
-        Uses ignore_errors=True to avoid crashing on NFS holdover files (.nfs*).
         """
+        gc.collect() # Force close of any open file handles from libpsf
+        time.sleep(1.0) 
+
         if os.path.exists(design_folder):
             try:
-                shutil.rmtree(design_folder, ignore_errors=True)
+                shutil.rmtree(design_folder, ignore_errors=False)
             except Exception as e:
-                print(f"Warning: Failed to cleanup {design_folder}: {e}")
+                # Fallback to stronger delete
+                subprocess.call(['rm', '-rf', design_folder])
 
     def _parse_result(self, design_folder):
         """
@@ -323,10 +340,7 @@ class SpectreWrapper(object):
 class EvaluationEngine(object):
     """
     Main evaluation engine for circuit optimization.
-
-    Handles design space exploration, cost function computation, and
-    evaluation of circuit designs against performance specifications.
-    Manages parameter space discretization and design ID encoding.
+    Stripped down for simple data generation.
 
     Initialization Parameters:
     --------------------------
@@ -342,190 +356,52 @@ class EvaluationEngine(object):
         # load configuration from YAML file
         with open(yaml_fname, 'r') as f:
             self.ver_specs = yaml.load(f, Loader=yaml.Loader)
-            # print("DEBUG ver_specs =", type(self.ver_specs), self.ver_specs)
         f.close()
 
-        # extract specification ranges
-        self.spec_range = self.ver_specs['spec_range']
-        params = self.ver_specs['params']
-
-        # discretize parameter space into vectors
-        self.params_vec = {}
-        self.search_space_size = 1
-        for key, value in params.items():
-            if value[0] == value[1]:
-                self.params_vec[key] = [value[0]]
-            else:
-                self.params_vec[key] = np.arange(value[0], value[1], value[2]).tolist()
-            self.search_space_size = self.search_space_size * len(self.params_vec[key])
-
-        # compute parameter bounds
-        self.params_min = [0]*len(self.params_vec)
-        self.params_max = []
-        for val in self.params_vec.values():
-            self.params_max.append(len(val)-1)
-
-        # setup ID encoder and testbench modules
-        self.id_encoder = IDEncoder(self.params_vec)
+        # setup testbench modules
         self.measurement_specs = self.ver_specs['measurement']
         tbs = self.measurement_specs['testbenches']
         self.netlist_module_dict = {}
         for tb_kw, tb_val in tbs.items():
             self.netlist_module_dict[tb_kw] = SpectreWrapper(tb_val)
 
-    @property
-    def num_params(self):
-        """
-        Gets the number of parameters in the search space.
-
-        Returns:
-        --------
-        int
-            Number of design parameters.
-        """
-        return len(self.params_vec)
-
-    def generate_data_set(self, n=1, debug=False):
-        """
-        Generates n valid design samples from the search space.
-
-        Randomly samples designs and evaluates them until n valid designs
-        are found. A valid design meets all specification constraints.
-
-        Parameters:
-        -----------
-        n : int
-            Number of valid designs to generate.
-        debug : bool
-            If True, raises exceptions instead of suppressing errors.
-        parallel_config : dict, optional
-            Configuration for parallel evaluation.
-        
-        Returns:
-        --------
-        valid_designs : list
-            List of n valid Design objects with evaluated specs and costs.
-        
-        Raises:
-        -------
-        ValueError
-            If unable to find n valid designs after extensive random sampling.
-        """
-        valid_designs, tried_designs = [], []
-        nvalid_designs = 0 
-        useless_iter_count = 0
-
-        # randomly sample design from parameter space
-        while len(valid_designs) < n:
-            design = {}
-            for key, vec in self.params_vec.items():
-                rand_idx = random.randrange(len(vec))
-                design[key] = rand_idx
-            design = Design(self.spec_range, self.id_encoder, list(design.values()))
-            
-            # skip if design already tried
-            if design in tried_designs:
-                if (useless_iter_count > n * 5):
-                    raise ValueError("Random selection of a fraction of search space did not "
-                                     "result in {} number of valid designs".format(n))
-                useless_iter_count += 1
-                continue
-            
-            # evaluate design
-            design_result = self.evaluate([design], debug=debug)[0]
-            if design_result['valid']:
-                design.cost = design_result['cost']
-                for key in design.specs.keys():
-                    design.specs[key] = design_result[key]
-                valid_designs.append(design)
-            else:
-                nvalid_designs += 1
-            tried_designs.append(design)
-
-        return valid_designs[:n]
-
     def evaluate(self, design_list, debug=True, parallel_config=None):
         """
         Evaluates designs and returns processed results.
 
-        Executes simulations for each design and computes cost function.
-        Errors are suppressed unless debug mode is enabled.
-
         Parameters:
         -----------
-        design_list : list
-            List of Design objects to evaluate.
+        design_list : list of dicts
+            List of design parameter dictionaries.
         debug : bool
-            If True, raises exceptions. If False, returns {'valid': False}.
-        parallel_config : dict, optional
-            Configuration for parallel evaluation.
         
         Returns:
         --------
         results : list
-            List of result dictionaries with cost and spec values.
+            List of (state, specs, info) tuples.
         """
         results = []
         
-        if len(design_list) > 1:
-            for design in design_list:
-                try:
-                    result = self._evaluate(design)
-                except Exception as e:
-                    if debug:
-                        raise e
-                    result = {'valid': False}
-                    print(getattr(e, 'message', str(e)))
-                results.append(result)
-        else:
-            try:
-                netlist_name, netlist_module = list(self.netlist_module_dict.items())[0]
-                result = netlist_module._create_design_and_simulate(design_list[0])
-            except Exception as e:
-                if debug:
-                    raise e
-                result = {'valid': False}
-                print(getattr(e, 'message', str(e)))
-            results.append(result)
+        for state in design_list:
+            # run simulations for all testbenches
+            sim_results = {}
+            for netlist_name, netlist_module in self.netlist_module_dict.items():
+                sim_results[netlist_name] = netlist_module._create_design_and_simulate(state, verbose=debug)
+
+            # get specifications from results (using subclass logic)
+            # subclass (e.g. OpampMeasMan) must implement get_specs
+            if hasattr(self, 'get_specs'):
+                specs_dict = self.get_specs(sim_results, state)
+            else:
+                # If no post-processing mapping, just return the raw specs from wrapper
+                # Assuming single testbench for simplicity if no get_specs
+                first_res = list(sim_results.values())[0]
+                specs_dict = first_res[1]
+
+            # Return format matching legacy expectation: (state, specs, info)
+            # We construct a dummy info here
+            info = 0
+            results.append((state, specs_dict, info))
 
         return results
 
-    def _evaluate(self, design):
-        """
-        Internal evaluation of a single design.
-
-        Maps design ID indices to actual parameter values, runs simulations,
-        and computes cost function from results.
-
-        Parameters:
-        -----------
-        design : Design
-            Design object to evaluate.
-        
-        Returns:
-        --------
-        specs_dict : dict
-            Dictionary containing all specs and computed cost.
-        """
-        # map design indices to actual parameter values
-        state_dict = dict()
-        design_i = 0
-        for key, vec in self.params_vec.items():
-            if len(vec) == 1:
-                state_dict[key] = vec[0]
-            else:
-                state_dict[key] = vec[design.id[design_i]]
-                design_i += 1
-
-        dsn_names = [design.id]
-
-        # run simulations for all testbenches
-        results = {}
-        for netlist_name, netlist_module in self.netlist_module_dict.items():
-            results[netlist_name] = netlist_module.create_design_and_simulate(state_dict, dsn_names)
-
-        # get specifications from results
-        specs_dict = self.get_specs(results, self.measurement_specs['meas_params'])        
-        specs_dict['cost'] = self.cost_fun(specs_dict)
-
-        return specs_dict

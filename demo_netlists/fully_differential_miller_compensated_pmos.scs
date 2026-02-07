@@ -1,0 +1,130 @@
+simulator lang=spectre 
+global 0 gnd! vdd!
+parameters use_tran=0 use_sine=0 dc_offset=0 mode_unity=0 run_gatekeeper={{run_gatekeeper}} run_full_char={{run_full_char}} fet_num={{fet_num}} vdd={{vdd}} vcm={{vcm}} tempc={{tempc}} rfeedback_val={{rfeedback_val}} rsrc_val={{rsrc_val}} cload_val={{cload_val}} nA1={{nA1}} nB1={{nB1}} nA2={{nA2}} nB2={{nB2}} nA3={{nA3}} nB3={{nB3}} nA4={{nA4}} nB4={{nB4}} nA5={{nA5}} nB5={{nB5}} nC0={{nC0}} vbiasp0={{vbiasp0}} vbiasp1={{vbiasp1}} vbiasn1={{vbiasn1}}
+
+{% if fet_num == 7 %}
+include "{{lstp_path}}/7nfet.pm"
+include "{{lstp_path}}/7pfet.pm"
+{% elif fet_num == 10 %}
+include "{{lstp_path}}/10nfet.pm"
+include "{{lstp_path}}/10pfet.pm"
+{% elif fet_num == 14 %}
+include "{{lstp_path}}/14nfet.pm"
+include "{{lstp_path}}/14pfet.pm"
+{% elif fet_num == 16 %}
+include "{{lstp_path}}/16nfet.pm"
+include "{{lstp_path}}/16pfet.pm"
+{% elif fet_num == 20 %}
+include "{{lstp_path}}/20nfet.pm"
+include "{{lstp_path}}/20pfet.pm"
+{% endif %}
+
+*--- TOPOLOGY ---*
+
+*--- fully_differential_miller_compensated_pmos Vbiasn1 Vbiasp0 Vbiasp1 Vinn Vinp Voutn Voutp ---*
+*.PININFO Vbiasn1:I Vbiasp0:I Vbiasp1:I Vinn:I Vinp:I Voutn:O Voutp:O
+MM0 net17 Vbiasp1 vdd! vdd! pfet l=nA5 nfin=nB5
+MM1 net21 Vinn net17 vdd! pfet l=nA4 nfin=nB4
+MM2 net25 Vinp net17 vdd! pfet l=nA4 nfin=nB4
+MM3 net21 Vbiasn1 gnd! gnd! nfet l=nA2 nfin=nB2
+MM4 net25 Vbiasn1 gnd! gnd! nfet l=nA2 nfin=nB2
+MM5 Voutn Vbiasp0 vdd! vdd! pfet l=nA3 nfin=nB3
+MM6 Voutp Vbiasp0 vdd! vdd! pfet l=nA3 nfin=nB3
+MM7 Voutn net21 gnd! gnd! nfet l=nA1 nfin=nB1
+MM8 Voutp net25 gnd! gnd! nfet l=nA1 nfin=nB1
+CC0 Voutn net21 capacitor c=nC0
+CC1 Voutp net25 capacitor c=nC0
+
+*--- TESTBENCH ---*
+
+*--- Ground, VDD, & VCM ---*
+VS (gnd! 0) vsource dc=0 type=dc
+V0 (vdd! gnd!) vsource dc=vdd ac=1 type=dc
+V1 (cm gnd!) vsource dc=vcm ac=1 type=dc
+
+*--- Signal Generation (Differential) ---*
+V2 (in_dc gnd!) vsource dc=dc_offset type=dc mag=1
+
+Vstep (in_step gnd!) vsource type=pulse val0=(0.2 * vdd) val1=(0.8 * vdd) delay=5n rise=50p fall=50p width=100n period=200n
+Vsine (in_sine gnd!) vsource type=sine ampl=(0.3 * vdd) freq=100M
+
+Rsw_sine (in_tran in_sine) resistor r=(use_sine * 1m + (1 - use_sine) * 100G)
+Rsw_step (in_tran in_step) resistor r=((1 - use_sine) * 1m + use_sine * 100G)
+
+E_pos_dc (Vinp_dc_pre cm in_dc gnd!) vcvs gain=0.5
+E_neg_dc (Vinn_dc_pre cm in_dc gnd!) vcvs gain=-0.5
+E_pos_tr (Vinp_tr_pre cm in_tran gnd!) vcvs gain=0.5
+E_neg_tr (Vinn_tr_pre cm in_tran gnd!) vcvs gain=-0.5
+
+Rsrc_dc_p (Vinp_dc_pre Vinp_dc) resistor r=rsrc_val
+Rsrc_dc_n (Vinn_dc_pre Vinn_dc) resistor r=rsrc_val
+Rsrc_tr_p (Vinp_tr_pre Vinp_tr) resistor r=rsrc_val
+Rsrc_tr_n (Vinn_tr_pre Vinn_tr) resistor r=rsrc_val
+
+Rin_dc_p (Vinp Vinp_dc) resistor r=((1 - use_tran) * 1m + use_tran * 100G)
+Rin_tr_p (Vinp Vinp_tr) resistor r=(use_tran * 1m + (1 - use_tran) * 100G)
+Rin_dc_n (Vinn Vinn_dc) resistor r=((1 - use_tran) * 1m + use_tran * 100G)
+Rin_tr_n (Vinn Vinn_tr) resistor r=(use_tran * 1m + (1 - use_tran) * 100G)
+
+Rshunt_p (Vinp 0) resistor r=10G
+Rshunt_n (Vinn 0) resistor r=10G
+
+*--- Mode Switching & Feedback ---*
+Vprobe_p (Voutp Vfb_node_p) vsource dc=0 type=dc
+Vprobe_n (Voutn Vfb_node_n) vsource dc=0 type=dc
+
+R_unity_p (Vinn Vfb_node_p) resistor r=(mode_unity * 1m + (1 - mode_unity) * 10G)
+R_unity_n (Vinp Vfb_node_n) resistor r=(mode_unity * 1m + (1 - mode_unity) * 10G)
+
+Rfeedback_p (Vinn Vfb_node_p) resistor r=((1 - mode_unity) * rfeedback_val + mode_unity * 10G)
+Rfeedback_n (Vinp Vfb_node_n) resistor r=((1 - mode_unity) * rfeedback_val + mode_unity * 10G)
+
+Cload_p (Voutp gnd!) capacitor c=cload_val
+Cload_n (Voutn gnd!) capacitor c=cload_val
+
+*--- Bias Values ---*
+VP0 (Vbiasp0 gnd!) vsource dc=vbiasp0 type=dc
+VP1 (Vbiasp1 gnd!) vsource dc=vbiasp1 type=dc
+VN1 (Vbiasn1 gnd!) vsource dc=vbiasn1 type=dc
+
+*--- Simulator Options ---*
+simulatorOptions options rawfmt=psfbin psfversion="1.4.0" reltol=1e-3 vabstol=1e-6 \
+    iabstol=1e-12 temp=tempc tnom=27 scalem=1.0 scale=1.0 gmin=1e-12 rforce=1 \
+    maxnotes=5 maxwarns=5 digits=5 cols=80 pivrel=1e-3 \
+    sensfile="../psf/sens.output" checklimitdest=psf 
+
+*--- SIMULATION TIER 1: The Gatekeeper ---*
+{% if run_gatekeeper %}
+a_unity alter param=mode_unity value=1
+dcOp_sim dc 
+stb_ol stb probe=Vprobe_p start=1 stop=100G dec=10
+
+a_closed alter param=mode_unity value=0
+stb_cl stb probe=Vprobe_p start=1 stop=100G dec=10
+{% endif %}
+
+*--- SIMULATION TIER 2: Full Characterization ---*
+{% if run_full_char %}
+xf_sim (Voutp Voutn) xf start=1 stop=100G dec=10
+dc_sw dc
+dc_swing dc param=dc_offset start=-0.1 stop=0.1 step=0.001
+noise (Voutp Voutn) noise start=1 stop=100G dec=20 iprobe=V2 annotate=status
+
+a_thd_1 alter param=use_tran value=1
+a_thd_2 alter param=use_sine value=1
+thd_sim tran stop=100n step=2p fourier=yes fund=100M nodes=[Voutp Voutn]
+
+a_slew_1 alter param=use_sine value=0
+slew_sim tran stop=200n step=5p
+{% endif %}
+
+*--- Data Export ---*
+dcOpInfo info what=oppoint where=rawfile
+modelParameter info what=models where=rawfile
+element info what=inst where=rawfile
+outputParameter info what=output where=rawfile
+designParamVals info what=parameters where=rawfile
+primitives info what=primitives where=rawfile
+subckts info what=subckts where=rawfile
+save V0:p Voutp Voutn Vinp Vinn MM0:gm MM0:vgs MM0:vds MM0:ids MM0:region MM1:gm MM1:vgs MM1:vds MM1:ids MM1:region MM2:gm MM2:vgs MM2:vds MM2:ids MM2:region MM3:gm MM3:vgs MM3:vds MM3:ids MM3:region MM4:gm MM4:vgs MM4:vds MM4:ids MM4:region MM5:gm MM5:vgs MM5:vds MM5:ids MM5:region MM6:gm MM6:vgs MM6:vds MM6:ids MM6:region MM7:gm MM7:vgs MM7:vds MM7:ids MM7:region MM8:gm MM8:vgs MM8:vds MM8:ids MM8:region 
+saveOptions options save=allpub rawfmt=psfbin

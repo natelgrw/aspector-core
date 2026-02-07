@@ -8,3 +8,5 @@ build/
 .cadence
 optimization/turbo_m.py
 .DS_Store/
+turbo_1/
+turbo_m/

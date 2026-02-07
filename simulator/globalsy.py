@@ -18,34 +18,108 @@ region_mapping = {
     4: "breakdown"
 }
 
-# netlist target specifications and default weights
-# Format: "spec_name": (target_value, weight, simulation_type)
-# simulation_type: 0=AC, 1=DC, 2=Noise, 3=Tran
-spec_metadata = {
-    "gain":             (1.0e5,  50.0, 0),
-    "ugbw":             (1.0e9,  10.0, 0),
-    "pm":               (60.0,   10.0, 0),
-    "cmrr":             (80.0,   10.0, 0),
-    "vos":              (1e-3,   50.0, 1),
-    "power":            (1.0e-3, 1.0,  1), # Check if 1mW is reasonable, user can override
-    "linearity":        (1.0,    5.0,  1), # Assuming unitless or %? Need to verify metric
-    "output_voltage_swing":     (0.5,    5.0,  1), # V
-    "integrated_noise": (1e-6,   10.0, 2), # Vrms
-    "slew_rate":        (10e6,   5.0,  3), # V/s
-    "settle_time":    (100e-9, 5.0,  3), # s
+# NOTE: The optimizer will handle spec optimization weights and targets.
+# Users should not implement them here manually.
+spec_metadata = {}
+specs_dict = {}
+specs_weights = {}
+
+# Parameter Restrictions
+
+# Basic Parameters
+basic_params = {
+    'L': {
+        'type': 'continuous',
+        'lb': '1.1 * L_min', # Dependent on technology node
+        'ub': '10 * L_min',
+        'unit': 'm'
+    },
+    'Nfin': {
+        'type': 'integer',
+        'lb': 1,
+        'ub': 256,
+        'unit': ''
+    },
+    'C_internal': {
+        'type': 'continuous',
+        'lb': 100e-15, # 100 fF
+        'ub': 5e-12,   # 5 pF
+        'sampling': 'logarithmic'
+    },
+    'R_internal': {
+        'type': 'continuous',
+        'lb': 500,     # 500 Ohm
+        'ub': 500e3,   # 500 kOhm
+        'sampling': 'logarithmic'
+    },
+    'Ibias': {
+        'type': 'continuous',
+        'lb': 100e-9,  # 100 nA
+        'ub': 1e-3,    # 1 mA
+        'unit': 'A'
+    },
+    'Vbias': {
+        'type': 'continuous',
+        'lb': 0,
+        'ub': 'VDD',   # Dependent on VDD
+        'unit': 'V'
+    }
 }
 
-# Legacy support - will be constructed dynamically in CLI but kept for reference
-specs_dict = {k: v[0] for k, v in spec_metadata.items()}
-specs_weights = {k: v[1] for k, v in spec_metadata.items()}
+# Environment Parameters
+env_params = {
+    'Rfeedback_val': {
+        'type': 'continuous',
+        'lb': 1e3,     # 1 kOhm
+        'ub': 1e6,     # 1 MOhm
+        'sampling': 'logarithmic'
+    },
+    'R_src': {
+        'type': 'continuous',
+        'lb': 50,      # 50 Ohm
+        'ub': 100e3,   # 100 kOhm
+        'sampling': 'logarithmic'
+    },
+    'Cload_val': {
+        'type': 'continuous',
+        'lb': 10e-15,  # 10 fF
+        'ub': 10e-12,  # 10 pF
+        'sampling': 'logarithmic'
+    }
+}
 
+# Testbench Parameters
+testbench_params = {
+    'Fet_num': [7, 10, 14, 16, 20],
+    'VDD': {
+        'type': 'continuous',
+        'lb': '0.9 * vdd_nominal',
+        'ub': '1.1 * vdd_nominal'
+    },
+    'VCM': {
+        'type': 'continuous',
+        'lb': 0.15,
+        'ub': 'VDD - 0.15'
+    },
+    'Tempc': {
+        'type': 'continuous',
+        'lb': -40,
+        'ub': 125
+    }
+}
 
-# parameter bounds
+# Legacy support - shared_ranges
+# Note: These legacy ranges are overridden by the structured parameters above
+# where applicable, but kept for compatibility with existing extractors
+# until they are fully updated.
 shared_ranges = {
-    'nA': (10e-9, 30e-9),
-    'nB': (1, 20),
-    'vbiasp': (0, 0.80),
-    'vbiasn': (0, 0.80),
-    'rr': (5e3, 1e7),
-    'cc': (0.1e-12, 2.5e-12)
+    'nA': (10e-9, 100e-9),  # Rough default for L
+    'nB': (1, 256),         # Nfin
+    'vbiasp': (0, 1.2),     # Vbias default
+    'vbiasn': (0, 1.2),     # Vbias default
+    'rr': (500, 500e3),     # R_internal
+    'cc': (100e-15, 5e-12), # C_internal
+    'rfeedback': (1e3, 1e6),
+    'rsrc': (50, 100e3),
+    'cload': (10e-15, 10e-12)
 }

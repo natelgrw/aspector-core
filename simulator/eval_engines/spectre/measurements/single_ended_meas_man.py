@@ -1,182 +1,179 @@
 """
-single_ended_meas_man.py
+differential_meas_man.py
 
 Author: natelgrw
-Last Edited: 01/15/2026
+Last Edited: 02/06/2026
 
 Measurement manager for processing and calculating performance specs 
-for single-ended op-amp simulations.
+for differential op-amp simulations.
 """
 
 from simulator.eval_engines.spectre.core import EvaluationEngine
 import numpy as np
-import pdb
-import IPython
 import scipy.interpolate as interp
 import scipy.optimize as sciopt
 import scipy.integrate as scint
-import matplotlib.pyplot as plt
 from simulator import globalsy
+from simulator.eval_engines.spectre.measurements.spec_functions import SpecCalc
 
-
-# ===== Single-Ended Op-Amp Measurement Manager ===== #
-
+# ===== Differential Op-Amp Measurement Manager ===== #
 
 class OpampMeasMan(EvaluationEngine):
     """
-    Measurement manager for single-ended op-amp simulations.
-
+    Measurement manager for differential op-amp simulations.
     Supports the calculation of performance specs including:
     - Gain
     - UGBW
     - Phase Margin
     - Power Consumption
     - CMRR
+    - PSRR
     - Input Offset Voltage (Vos)
     - Linearity Range
     - Output Voltage Swing
     - Integrated Noise
     - Slew Rate
     - Settling Time
-
-    Built on top of the EvaluationEngine base class.
+    - THD
     """
+    
+    # Inherit capability to calculate specs directly
+    def process_ac(self, results, params):
+        return ACTB.process_ac(results, params)
 
     def __init__(self, yaml_fname):
-
         EvaluationEngine.__init__(self, yaml_fname)
 
     def get_specs(self, results_dict, params):
         """
         Constructs a cleaned specs dictionary from an input results dictionary.
-
-        Parameters:
-        -----------
-        results_dict: dict
-            The raw results dictionary from simulations.
-        params: dict
-            Additional parameters for processing.
-        
-        Returns:
-        --------
-        specs_dict: dict
-            The cleaned specs dictionary extracted from results.
         """
-        print("Results dict keys:", results_dict.keys())
+        # print(f"DEBUG: get_specs params keys: {list(params.keys()) if params else 'None'}")
+        
+        # Flatten results if wrapped in netlist name dict (core.py behavior)
+        if results_dict and isinstance(results_dict, dict):
+             keys = list(results_dict.keys())
+             # Heuristic: if key is a netlist name and value is tuple (state, specs, info)
+             if len(keys) == 1 and isinstance(results_dict[keys[0]], tuple):
+                  # Extract the actual specs dict from the tuple
+                  results_dict = results_dict[keys[0]][1]
+
+        # Check if results are already processed (Idempotency)
+        if 'gain_ol' in results_dict or 'ugbw' in results_dict:
+             return results_dict
+
         specs_dict = dict()
-        ac_dc = results_dict['ac_dc']
-        for _, res, _ in ac_dc:
-            specs_dict = res
+        # In differential scenarios, results might come differently structured 
+        # depending on wrapper. Assuming standard tuple return from core.py
+        if 'ac_dc' in results_dict:
+             ac_dc_tuple = results_dict['ac_dc']
+             specs_dict = ac_dc_tuple[1]
+        else:
+             # If direct dictionary passed
+             return self.process_ac(results_dict, params)
+             
         return specs_dict
 
     def compute_penalty(self, spec_nums, spec_kwrd):
         """
         Computes penalties for given spec numbers based on predefined spec ranges.
-
-        Parameters:
-        -----------
-        spec_nums: list
-            The spec numbers to evaluate.
-        spec_kwrd: str
-            The keyword identifying the spec in the spec_range dictionary.  
-
-        Returns:
-        --------
-        penalties: list
-            List of computed penalties for each spec number.
         """
         if type(spec_nums) is not list:
             spec_nums = [spec_nums]
         penalties = []
         for spec_num in spec_nums:
             penalty = 0
-            spec_min, spec_max, w = self.spec_range[spec_kwrd]
-            if spec_max is not None:
-                if spec_num > spec_max:
-                    penalty += w * abs(spec_num - spec_max) / abs(spec_num)
-            if spec_min is not None:
-                if spec_num < spec_min:
-                    penalty += w * abs(spec_num - spec_min) / abs(spec_min)
+            if spec_kwrd in self.spec_range:
+                spec_min, spec_max, w = self.spec_range[spec_kwrd]
+                if spec_max is not None:
+                    if spec_num > spec_max:
+                        penalty += w * abs(spec_num - spec_max) / abs(spec_num)
+                if spec_min is not None:
+                    if spec_num < spec_min:
+                        penalty += w * abs(spec_num - spec_min) / abs(spec_min)
             penalties.append(penalty)
         return penalties
 
-
 # ===== AC Analysis Function Class for OpampMeasMan ===== #
-
 
 class ACTB(object):
     """
     AC Analysis Trait Base for OpampMeasMan.
-
-    Provides methods to process AC analysis results and compute 
-    performance specs from simulation data.
     """
 
     @classmethod
     def process_ac(self, results, params):
         """
         Processes AC analysis results to compute performance specifications.
-
-        Parameters:
-        -----------
-        results: dict
-            The raw results dictionary derived from simulations.
-        params: dict
-            Additional parameters for processing.
-        
-        Returns:
-        --------
-        specs: dict 
-            A cleaned specs dictionary with computed performance specifications.
         """
         # --- Safely Extract Results ---
-        # Returns None if simulation block was skipped or failed
-        
-        # AC Analysis (Differential and Common Mode)
-        ac_result_diff = results.get('acswp-000_ac')
-        ac_result_cm   = results.get('acswp-001_ac')
+        # Debugging hook for result type issues
+        if not isinstance(results, dict):
+             # print(f"DEBUG: results is type {type(results)}. Expected dict.")
+             # If it's a list, it might be due to parser error or mismatch
+             return {}
 
-        # DC Operating Point (at zero offset, index 500)
-        dc_results     = results.get('dcswp-500_dcOp')
+        # AC Analysis (Single Ended)
+        # Prioritize STB loop for stability/gain analysis.
+        # DO NOT include xf_sim here, as it contains transfer functions, not loop gain.
+        # Open Loop Analysis (prioritize stb_ol)
+        ac_result_se = results.get('stb_ol') or results.get('acswp-000_ac') or results.get('stb_loop') or results.get('ac')
+        # ac_result_cm = results.get('acswp-001_ac')
+        dc_results = results.get('dcOp_sim') or results.get('dcswp-500_dcOp') or results.get('vos_sim') or results.get('dcOp') or results.get('dc')
+        noise_results = results.get('noise_sim') or results.get('noise')
+        xf_resultsdict = results.get('xf_sim')
+        thd_results = results.get('thd_sim')
+        slew_results = results.get('slew_sim') 
 
-        # Noise Analysis
-        noise_results  = results.get('noise')
-
-        # Transient Analysis
-        tran_results   = results.get('tran_voutp')
-
-        # --- Initialize Specs ---
-        # Default to None if not computed
+        # --- Initialize Specs to None ---
         vos = None
-        gain = None
+        gain_ol = None
+        gain_ol_lin = None
+        gain_cl = None
         ugbw = None
         phm = None
+        gm = None
+        area = None
         power = None
         cmrr = None
+        psrr = None
+
         linearity = None
         output_voltage_swing = None
         integrated_noise = None
         slew_rate = None
         settle_time = None
+        thd = None
         
-        # Auxiliary MM metrics
+        valid = False
+
+
+        # --- Metric Extraction ---
         ids_MM = {}
         gm_MM = {}
         vgs_MM = {}
         vds_MM = {}
         region_MM = {}
-        
-        valid = False
-
-        # --- Compute Specs if Data Available ---
 
         # 1. DC Processing
         if dc_results:
-            # common mode voltage 
-            vcm = dc_results.get("cm", 0.0) # Default if 'cm' missing?
-            power = -dc_results.get('V0:p', 0.0)
+            vcm = dc_results.get("cm", 0.0)
             
-            # Extract MM transistor metrics
+            # Identify VDD if possible (check params or DC results)
+            vdd_val = 0.0
+            if params and 'vdd' in params:
+                 vdd_val = float(params['vdd'])
+            elif results.get('vdd'):
+                 vdd_val = float(results['vdd'])
+            
+            # Extract Supply Current and Compute Power
+            if 'V0:p' in dc_results:
+                 i_supply = np.abs(dc_results['V0:p']) 
+                 if vdd_val > 0:
+                      power = i_supply * vdd_val
+                 else:
+                      power = i_supply
+            
             for comp, val in dc_results.items():
                 if comp.startswith("MM") and comp.endswith("ids"):
                     ids_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
@@ -188,67 +185,153 @@ class ACTB(object):
                     vds_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
                 elif comp.startswith("MM") and comp.endswith("region"):
                     region_MM[comp.split(':')[0]] = float('%.3g' % np.abs(val))
-                    
-            # Compute specs requiring DC Sweep context but maybe distinct logic?
-            # 'output_voltage_swing' usually comes from the DC sweep curve, not just OpPoint
-            # 'find_output_voltage_swing' usually iterates results.
-            # Wait, process_ac passes 'results' (the whole dict) to find_output_voltage_swing
-            output_voltage_swing = self.find_output_voltage_swing(results, vcm)
+
             vos = self.find_vos(results, vcm)
+            output_voltage_swing = self.find_output_voltage_swing(results, vcm)
+        
+        # 2. AC Processing (Single Ended)
+        if ac_result_se:
+            # Check for consolidated loopGain (STB analysis)
+            # Search keys safely for loopGain
+            keys = list(ac_result_se.keys())
+            loop_key = next((k for k in keys if "loopGain" in k and "dB" not in k), None)
             
-            if ac_result_diff:
-                 linearity_range = self.find_linearity(results, ac_result_diff['Voutp'])
+            if loop_key:
+                vout_diff = ac_result_se[loop_key]
+            else:
+                vout_diff = None
+
+            # Fallback: Check for loopGain_dB and phase if complex loopGain missing
+            if vout_diff is None:
+                 db_key = next((k for k in keys if "loopGain" in k and "dB" in k), None)
+                 ph_key = next((k for k in keys if "phase" in k or "Phase" in k), None)
                  
-                 # Scalarize ranges for optimization
-                 if linearity_range and isinstance(linearity_range, (list, tuple)) and len(linearity_range) == 2:
-                     # linearity = abs(linearity_range[1] - linearity_range[0])
-                     linearity = linearity_range
+                 if db_key and ph_key:
+                      lg_db = np.array(ac_result_se[db_key])
+                      lg_ph = np.array(ac_result_se[ph_key])
+                      # Reconstruct complex form: 10^(dB/20) * exp(j * deg2rad(phase))
+                      lg_mag = 10**(lg_db/20.0)
+                      vout_diff = lg_mag * np.exp(1j * np.deg2rad(lg_ph))
+
+            # If no loopGain, check for Voutp (Only if standard AC sweep)
+            if vout_diff is None:
+                 if 'Voutp' in ac_result_se:
+                     vout_diff = np.array(ac_result_se['Voutp'])
+                 elif 'Vout' in ac_result_se:
+                     vout_diff = np.array(ac_result_se['Vout'])
                  else:
-                     # linearity = 0.0 # Define behavior if undefined
-                     linearity = (0.0, 0.0)
+                     vout_diff = np.array([])
+            else:
+                 vout_diff = np.array(vout_diff) # Ensure array
 
-                 if output_voltage_swing and isinstance(output_voltage_swing, (list, tuple)) and len(output_voltage_swing) == 2:
-                     # output_voltage_swing = abs(output_voltage_swing[1] - output_voltage_swing[0])
-                     output_voltage_swing = output_voltage_swing
-                 else:
-                     # Handle case where output_voltage_swing might be None or scalar already, primarily expecting None if failed
-                     if output_voltage_swing is None:
-                        output_voltage_swing = (0.0, 0.0)
+            freq = ac_result_se.get('sweep_values')
+            if freq is None:
+                # Try finding 'freq' search key
+                freq_key = next((k for k in keys if "freq" in k.lower()), None)
+                if freq_key: freq = ac_result_se[freq_key]
 
-        # 2. AC Processing
-        if ac_result_diff:
-             vout_diff = ac_result_diff['Voutp']
-             freq = ac_result_diff['sweep_values']
+            if len(vout_diff) > 0 and freq is not None and len(freq) > 0:
+                gain_ol_lin = SpecCalc.find_dc_gain(vout_diff)
+                ugbw, valid = SpecCalc.find_ugbw(freq, vout_diff)
+                phm = SpecCalc.find_phm(freq, vout_diff, ugbw, valid)
+                gm = SpecCalc.find_gain_margin(freq, vout_diff)
+                
+                # Check Linearity using DC Gain
+                # linearity = self.find_linearity(results, vout_diff) 
+            else:
+                 # If we have Vout but no Freq, we can at least get DC gain
+                 if len(vout_diff) > 0:
+                      gain_ol_lin = SpecCalc.find_dc_gain(vout_diff)
+                 # Add Debug info if failures persist
+                 # print(f"DEBUG: Keys in ac_result: {keys}")
+        
+        # 2b. Area Calculation (Heuristic from Params)
+        if params:
+             area = 0.0
+             # Schematic Area Estimation
+             # nB is confirmed to be FIN COUNT.
+             # We use 100nm effective width per fin.
+             effective_fin_width = 100e-9 
              
-             gain = self.find_dc_gain(vout_diff)
-             ugbw, valid = self.find_ugbw(freq, vout_diff)
-             phm = self.find_phm(freq, vout_diff)
-             
-             if ac_result_cm:
-                 cmrr = self.find_cmrr(vout_diff, ac_result_cm['Voutp'])
+             for key, val in params.items():
+                  if key.startswith('nA'):
+                       suffix = key[2:]
+                       width_key = 'nB' + suffix
+                       if width_key in params:
+                            area += (val * params[width_key])
 
-        # 3. Noise Processing
+             # Convert proxy (L*N) to Physical Area (m^2)
+             area *= effective_fin_width
+             
+             # --- Passive Component Area Estimation ---
+             # Constants for Generic FinFET Node
+             cap_density = 2e-3  # F/m^2 (2 fF/um^2)
+             res_area_coeff = 1e-17  # m^2 per Ohm (Based on High-Res Poly)
+
+             for key, val in params.items():
+                 # Capacitors (nC...)
+                 if key.startswith('nC') and val > 0:
+                     area += (val / cap_density)
+                 # Resistors (nR...)
+                 elif key.startswith('nR') and val > 0:
+                     area += (val * res_area_coeff)
+
+        # 3. CMRR / PSRR / Closed Loop Gain Processing
+        if xf_resultsdict:
+             if gain_ol_lin is not None and gain_ol_lin != 0:
+                  psrr = self.find_psrr(xf_resultsdict, np.abs(gain_ol_lin))
+                  cmrr = self.find_cmrr_xf(xf_resultsdict, np.abs(gain_ol_lin))
+             
+             # Calculate Closed Loop Gain (from 'in_dc' or 'V2')
+             gain_cl_lin = self.find_closed_loop_gain(xf_resultsdict)
+             if gain_cl_lin is not None and gain_cl_lin != 0:
+                 gain_cl = 20 * np.log10(np.abs(gain_cl_lin))
+
+        # Convert Open Loop Gain to dB
+        if gain_ol_lin is not None and gain_ol_lin != 0:
+            gain_ol = 20 * np.log10(np.abs(gain_ol_lin))
+
+        # 4. Noise Processing
         if noise_results:
-            integrated_noise = self.find_integrated_noise(noise_results)
+             integrated_noise = SpecCalc.find_integrated_noise(noise_results)
 
-        # 4. Transient Processing
-        if tran_results:
-            slew_rate = self.find_slew_rate(tran_results)
-            settle_time = self.find_settle_time(tran_results)
+        # 5. Transient Processing (Slew / Settling)
+        if slew_results:
+             time = slew_results.get('time', [])
+             t_val = slew_results.get('Voutp') or slew_results.get('Vout')
+             
+             if (time is None or len(time) == 0) and 'sweep_values' in slew_results:
+                  time = slew_results['sweep_values']
 
-        # Standardize keys to match globalsy.py
+             if t_val is not None and len(t_val) > 0:
+                  # Force lengths to match
+                  min_len = min(len(time), len(t_val))
+                  tran_data = list(zip(time[:min_len], t_val[:min_len]))
+                  
+                  slew_rate = SpecCalc.find_slew_rate(tran_data)
+                  settle_time = SpecCalc.find_settle_time(tran_data)
+
+        # 6. THD
+        if thd_results:
+             thd = self.find_thd(thd_results)
+
+        # Return Results (Nulls preserved)
         results = dict(
-            gain = gain,
-            ugbw = ugbw, # Was funity
+            gain_ol = gain_ol,
+            gain_cl = gain_cl,
+            ugbw = ugbw,
             pm = phm,
+            gm = gm,
+            area = area,
             power = power,
             vos = vos,
-            cmrr = cmrr,
-            linearity = linearity, # Was linearity
-            output_voltage_swing = output_voltage_swing, # Was output_voltage_swing
+            cmrr = cmrr, 
+            psrr = psrr, 
+            linearity = thd,
+            output_voltage_swing = output_voltage_swing,
             integrated_noise = integrated_noise,
             slew_rate = slew_rate,
-            settle_time = settle_time, # Was settle_time
+            settle_time = settle_time,
             valid = valid,
             zregion_of_operation_MM = region_MM,
             zzgm_MM = gm_MM,
@@ -256,470 +339,296 @@ class ACTB(object):
             zzvds_MM = vds_MM,
             zzvgs_MM = vgs_MM
         )
-
         return results
 
     @classmethod
-    def find_dc_gain(self, vout_diff):
+    def find_psrr(self, xf_results, dc_gain_lin):
         """
-        Finds the DC gain from single-ended output voltage.
+        Calculates PSRR (Power Supply Rejection Ratio) in dB.
+        PSRR = 20 * log10( A_dm_dc / A_supply_dc )
+        Expects dc_gain_lin to be linear open loop gain.
+        """
+        if dc_gain_lin is None or dc_gain_lin == 0:
+            return None
 
-        Parameters:
-        -----------
-        vout_diff: numpy array
-            The single-ended output voltage array from AC analysis.
+        keys = xf_results.keys()
         
-        Returns:
-        --------
-        dc_gain: float
-            The DC gain value.
-        """
-        return np.abs(vout_diff)[0]
+        # Prioritize exact match for VDD source 'V0'
+        vdd_key = "V0" if "V0" in keys else next((k for k in keys if "V0" in k), None)
+        
+        if vdd_key:
+            vals = xf_results[vdd_key] 
+            # Use DC value (Index 0)
+            tf_vdd = float(np.abs(vals)[0])
+            
+            if tf_vdd > 1e-12:
+                return 20 * np.log10(dc_gain_lin / tf_vdd)
+            else:
+                return 200.0
+        return None
 
     @classmethod
-    def find_ugbw(self, freq, vout_diff):
+    def find_cmrr_xf(self, xf_results, dc_gain_lin):
         """
-        Finds unity gain bandwidth (UGBW) from single-ended output voltage.
+        Calculates CMRR (Common Mode Rejection Ratio) in dB.
+        """
+        if dc_gain_lin is None or dc_gain_lin == 0:
+            return None
 
-        Parameters:
-        -----------
-        freq: numpy array
-            The frequency array from AC analysis.
-        vout_diff: numpy array
-            The single-ended output voltage array from AC analysis.
+        keys = xf_results.keys()
         
-        Returns:
-        --------
-        ugbw: float
-            The unity gain bandwidth value.
-        valid: bool
-            Indicates if a valid UGBW crossing was found.
-        """
-        gain = np.abs(vout_diff)
-        ugbw, valid = self._get_best_crossing(freq, gain, val=1)
-        if valid:
-            return ugbw, valid
-        else:
-            return freq[0], valid
+        # Prioritize exact match for CM source 'V1'
+        cm_key = "V1" if "V1" in keys else next((k for k in keys if "V1" in k), None)
+        
+        # Look for the Common Mode source key
+        # cm_key = next((k for k in keys if "V1" in k), None)
+        
+        # If we have Voutp/Voutn separate in XF results (which is common for xf (Voutp Voutn))
+        # Then results might be { 'Voutp': { 'V1': ..., 'V0': ... }, 'Voutn': { ... } } 
+        # OR flattened: { 'V1': [val_p, val_n]? } No, Parser structure matters.
+        # Parser splits signals.
+        # For 'xf_sim', it likely returns 'Voutp' and 'Voutn' keys IF they are the Output variables.
+        # BUT XF returns TF *from* sources *to* the output specified in analysis.
+        # If analysis is `xf_sim (Voutp Voutn) ...` it computes transf. to Voutp AND Voutn.
+        # Parser usually flattens this.
+        # If parsed as: data['xf_sim'] = { 'V1': ..., 'V0': ..., 'sweep_values': ... } if only 1 output?
+        # But here we have two outputs.
+        # libpsf behavior: if multiple outputs, it might be tricky.
+        
+        if cm_key:
+            vals = xf_results[cm_key]
+            tf_cm = float(np.abs(vals)[0])
+            
+            if tf_cm > 1e-12:
+                return 20 * np.log10(dc_gain_lin / tf_cm)
+            else:
+                return 200.0
+        return None
 
     @classmethod
-    def find_phm(self, freq, vout):
+    def find_closed_loop_gain(self, xf_results):
         """
-        Finds phase margin (PM) from single-ended output voltage.
-
-        Parameters:
-        -----------
-        freq: numpy array
-            The frequency array from AC analysis.
-        vout: numpy array
-            The single-ended output voltage array from AC analysis.
+        Finds Closed Loop Gain from XF analysis.
+        Target source is 'V2' (or 'in_dc').
+        """
+        keys = xf_results.keys()
+        # Look for the input source key
+        input_key = next((k for k in keys if "V2" in k or "in_dc" in k), None)
         
-        Returns:
-        --------
-        pm: float
-            The phase margin value. If UGBW is not found, returns -180.
-        """
-        gain = np.abs(vout)
-
-        # calculate phase in degrees and unwrap
-        phase = np.angle(vout, deg=True)
-        phase = np.unwrap(np.deg2rad(phase))
-        phase = np.rad2deg(phase)
-
-        # create interpolation function for phase and find phase at UGBW
-        phase_fun = interp.interp1d(freq, phase, kind='quadratic')
-        ugbw, valid = self._get_best_crossing(freq, gain, val=1)
-
-        # wrap phase into [-180, 180]
-        if valid:
-            phase_at_ugbw = (phase_fun(ugbw) + 180) % 360 - 180
-            pm = 180 + phase_at_ugbw
-            pm = (pm + 180) % 360 - 180
-            return pm
-        else:
-            return -180
+        if input_key:
+            vals = xf_results[input_key] 
+            # XF vals are transfer function magnitudes
+            return float(np.abs(vals)[0])
+        return None
 
     @classmethod
-    def find_cmrr(self, vout_diff, vout_cm):
+    def find_thd(self, thd_results):
         """
-        Finds common mode rejection ratio (CMRR) from 
-        single-ended and common mode output voltages.
-
-        Parameters:
-        -----------
-        vout_diff: numpy array
-            The single-ended output voltage array.
-        vout_cm: numpy array
-            The common mode output voltage array.
+        Calculates Total Harmonic Distortion (THD) from transient simulation.
+        Returns THD in dBc.
+        """
+        time = thd_results.get('time', [])
+        # Handle case where keys might be just lists without 'time' key if simple dict
+        if (time is None or len(time) == 0) and 'sweep_values' in thd_results:
+             time = thd_results['sweep_values']
+             
+        # Extract Single Ended Output
+        v_sig = thd_results.get('Voutp') or thd_results.get('Vout')
         
-        Returns:
-        --------
-        cmrr: float
-            The common mode rejection ratio value.  
-        """
-        gain_diff = self.find_dc_gain(vout_diff)
-        gain_cm = np.abs(vout_cm)[0]
+        if v_sig is None or len(v_sig) == 0:
+             return None
 
-        return gain_diff / gain_cm
+        v_sig = np.array(v_sig)
+             
+        if len(time) != len(v_sig):
+             # Try to recover if lengths slightly mismatch due to artifacts
+             min_len = min(len(time), len(v_sig))
+             time = time[:min_len]
+             v_sig = v_sig[:min_len]
+        
+        # FFT
+        n = len(v_sig)
+        if n < 2: return None
+        
+        # Windowing (Hanning) to reduce leakage
+        window = np.hanning(n)
+        v_windowed = v_sig * window
+        
+        fft_vals = np.fft.rfft(v_windowed)
+        fft_mag = np.abs(fft_vals) / n
+        
+        # Remove DC
+        fft_mag[0] = 0
+        
+        # Find Fundamental
+        fund_idx = np.argmax(fft_mag)
+        fund_mag = fft_mag[fund_idx]
+        
+        if fund_mag < 1e-9: return None # No signal
+        
+        # Sum Harmonics (2nd to 10th)
+        harm_power = 0
+        for i in range(2, 11):
+             h_idx = fund_idx * i
+             # Allow small window around exact harmonic index
+             if h_idx < len(fft_mag):
+                  # Simple peak finding around expected index
+                  # search range +/- 2 bins
+                  start = max(0, h_idx - 2)
+                  end = min(len(fft_mag), h_idx + 3)
+                  h_mag = np.max(fft_mag[start:end])
+                  harm_power += h_mag**2
+        
+        thd_lin = np.sqrt(harm_power) / fund_mag
+        if thd_lin <= 0: return -100.0 # Perfect?
+        
+        thd_db = 20 * np.log10(thd_lin)
+        return thd_db
+
+    @classmethod
+    def find_closed_loop_gain(self, xf_results):
+        """
+        Finds Closed Loop Gain from XF analysis.
+        Target source is 'V2' (or 'in_dc').
+        """
+        keys = xf_results.keys()
+        # Look for the input source key
+        input_key = next((k for k in keys if "V2" in k or "in_dc" in k), None)
+        
+        if input_key:
+            vals = xf_results[input_key] 
+            # XF vals are transfer function magnitudes
+            return float(np.abs(vals)[0])
+        return None
 
     @classmethod
     def extract_dc_sweep(self, results):
         """
-        Extracts and returns sorted (dc_offsets, vouts) arrays from a DC sweep.
-
-        Parameters:
-        -----------
-        results: dict
-            The raw results dictionary from simulations.
-        
-        Returns:
-        --------
-        dc_offsets: numpy array
-            Sorted array of DC offset values.
-        vouts: numpy array
-            Sorted array of output voltages corresponding to DC offsets.
+        Extracts sorted (dc_offsets, vout_diff) from DC sweep.
+        Handles both consolidated 'dc_swing' swept result and split 'dcswp-XXX' files.
         """
         dc_offsets = []
-        vouts = []
+        vout_diffs = []
+        
+        # Method 1: Consolidated Swept DC Analysis (Preferred)
+        if 'dc_swing' in results:
+            swing_res = results['dc_swing']
+            if 'sweep_values' in swing_res and 'sweep_vars' in swing_res:
+                # Assuming sweep_values is a list of tuples or list, but for 1 param it's often a list
+                # sweep_values typical format in libpsf is list of floats for simple sweep
+                offsets_in = swing_res['sweep_values']
+                
+                if 'Voutp' in swing_res and 'Voutn' in swing_res:
+                    v_p = np.array(swing_res['Voutp'])
+                    v_n = np.array(swing_res['Voutn'])
+                    # If dimensions mismatch, flatten or check
+                    # They likely match sweep_values length
+                    v_diff = v_p - v_n
+                    return np.array(offsets_in), v_diff
+                elif 'Voutp' in swing_res:
+                    return np.array(offsets_in), np.array(swing_res['Voutp'])
 
-        for result in results.keys():
-            if result.startswith('dcswp-'):
-                val = results[result]["Voutp"]
-                # parse offset value from key string
-                if result[6:10] == "1000":
-                    dc_offset = int(result[6:10]) * 0.001 - 0.5
-                else:
-                    dc_offset = int(result[6:9]) * 0.001 - 0.5
-                dc_offsets.append(dc_offset)
-                vouts.append(val)
+        # Method 2: Legacy Split Files
+        for result_key in results.keys():
+            if result_key.startswith('dcswp-'):
+                res_dict = results[result_key]
+                if 'Voutp' in res_dict and 'Voutn' in res_dict:
+                    val = res_dict['Voutp'] - res_dict['Voutn']
+                elif 'Voutp' in res_dict:
+                     val = res_dict['Voutp']
+                else: 
+                     val = 0.0
+                
+                try:
+                    num_part = result_key.split('_')[0].split('-')[1]
+                    idx = int(num_part)
+                    # Differential specific sweep logic
+                    dc_offset = -0.1 + (idx * 0.001)
+                    
+                    dc_offsets.append(dc_offset)
+                    vout_diffs.append(val)
+                except:
+                    pass
 
-        # sort both arrays by offset
         dc_offsets = np.array(dc_offsets)
-        vouts = np.array(vouts)
-        sort_idx = np.argsort(dc_offsets)
-
-        return dc_offsets[sort_idx], vouts[sort_idx]
+        vout_diffs = np.array(vout_diffs)
+        
+        if len(dc_offsets) > 0:
+            sort_idx = np.argsort(dc_offsets)
+            return dc_offsets[sort_idx], vout_diffs[sort_idx]
+        return np.array([]), np.array([])
 
     @classmethod
     def find_vos(self, results, vcm):
-        """
-        Finds input offset voltage (Vos) from DC sweep results.
-
-        Parameters:
-        -----------
-        results: dict
-            The raw results dictionary from simulations.
-        vcm: float
-            The common mode voltage.    
-        
-        Returns:
-        --------
-        vos: float
-            The input offset voltage value. 
-        """
         dc_offsets, vouts = self.extract_dc_sweep(results)
+        if len(dc_offsets) < 4: return None
 
-        # create a smooth cubic spline across all points
         spline = interp.UnivariateSpline(dc_offsets, vouts, s=0)
-
-        def root_func(x):
-            """
-            Calculates difference between spline output and target vcm.
-
-            Parameters:
-            -----------
-            x: float
-                The DC offset value.
-
-            Returns:
-            --------
-            diff: float
-                The difference between spline output and vcm.
-            """
-            return spline(x) - vcm
-
-        # find Vos using Brent's method
+        def root_func(x): return float(spline(x)) - vcm
         try:
-            vos = sciopt.brentq(root_func, dc_offsets[0], dc_offsets[-1])
+            return sciopt.brentq(root_func, dc_offsets[0], dc_offsets[-1])
         except ValueError:
-            vos = -1e2
-
-        return vos
-
-    @classmethod
-    def find_linearity(self, results, vout_diff, allowed_deviation_pct=2.0):
-        """
-        Finds gain linearity range from DC sweep results.
-
-        Parameters:
-        -----------
-        results: dict
-            The raw results dictionary from simulations.
-        vout_diff: numpy array
-            The single-ended output voltage array.
-        allowed_deviation_pct: float
-            The allowed percentage deviation from ideal linearity.
-        
-        Returns:
-        --------
-        linear_range: tuple or None
-            The (min, max) DC offset values defining the linearity range.
-            Returns None if gain is too small to define linearity.  
-        """
-        # find gain
-        gain = self.find_dc_gain(vout_diff)
-        if gain < 1:
-            # gain too small, linearity undefined
             return None
 
-        dc_offsets, vouts = self.extract_dc_sweep(results)
+    # @classmethod
+    # def find_linearity(self, results, vout_diff, allowed_deviation_pct=2.0):
+    #     # Similar to Diff logic but uses single ended params
+    #     gain = SpecCalc.find_dc_gain(vout_diff)
+    #     # Allow linearity calculation even if gain is low/None, to report the range
+    #     # if gain is None or gain < 1: return None
 
-        # spline operations
-        spline = interp.UnivariateSpline(dc_offsets, vouts, s=0)
+    #     dc_offsets, vouts = self.extract_dc_sweep(results)
+    #     if len(dc_offsets) < 4: return None
 
-        slope_spline = spline.derivative(n=1)
+    #     spline = interp.UnivariateSpline(dc_offsets, vouts, s=0)
+    #     slope_spline = spline.derivative(n=1)
+    #     fine_x = np.linspace(dc_offsets.min(), dc_offsets.max(), 2000)
+    #     fine_slope = slope_spline(fine_x)
+        
+    #     # Safe finding of zero crossing for linearity center
+    #     zero_idxs = np.where(np.isclose(fine_x, 0, atol=1e-3))[0]
+    #     if len(zero_idxs) > 0:
+    #          zero_idx = zero_idxs[0]
+    #     else:
+    #          zero_idx = np.argmin(np.abs(fine_x))
 
-        # define a fine resolution grid
-        fine_x = np.linspace(dc_offsets.min(), dc_offsets.max(), 2000)
-        fine_slope = slope_spline(fine_x)
+    #     slope_at_zero = fine_slope[zero_idx]
+    #     allowed_dev = abs(slope_at_zero) * (allowed_deviation_pct / 100.0)
 
-        # find index closest to x = 0
-        zero_idx = np.argmin(np.abs(fine_x - 0))
-        slope_at_zero = fine_slope[zero_idx]
+    #     left_idx = zero_idx
+    #     while left_idx > 0 and abs(fine_slope[left_idx] - slope_at_zero) <= allowed_dev:
+    #         left_idx -= 1
+    #     right_idx = zero_idx
+    #     while right_idx < len(fine_x) - 1 and abs(fine_slope[right_idx] - slope_at_zero) <= allowed_dev:
+    #         right_idx += 1
 
-        # allowed deviation in slope
-        allowed_dev = abs(slope_at_zero) * (allowed_deviation_pct / 100.0)
+    #     return (fine_x[left_idx], fine_x[right_idx])
 
-        # expand left
-        left_idx = zero_idx
-        while left_idx > 0 and abs(fine_slope[left_idx] - slope_at_zero) <= allowed_dev:
-            left_idx -= 1
-
-        # expand right
-        right_idx = zero_idx
-        while right_idx < len(fine_x) - 1 and abs(fine_slope[right_idx] - slope_at_zero) <= allowed_dev:
-            right_idx += 1
-
-        linear_range = (fine_x[left_idx], fine_x[right_idx])
-        return linear_range
 
     @classmethod
     def find_output_voltage_swing(self, results, vcm, allowed_deviation_pct=10.0):
-        """
-        Finds output voltage swing from DC sweep results.
-
-        Parameters:
-        -----------
-        results: dict
-            The raw results dictionary from simulations.
-        vcm: float
-            The common mode voltage.
-        allowed_deviation_pct: float
-            The allowed percentage deviation from max slope.
-        
-        Returns:
-        --------
-        y_range: tuple
-            The (y_min, y_max) output voltage swing range.
-        """
-        # extract dc sweep data
         dc_offsets, vouts = self.extract_dc_sweep(results)
-        dc_offsets = np.array(dc_offsets)
-        vouts = np.array(vouts)
+        if len(dc_offsets) < 4: return None
 
-        # spline operations
         spline = interp.UnivariateSpline(dc_offsets, vouts, s=0)
-
         slope_spline = spline.derivative()
-
-        # Vos operations
-        idx_vos = np.argmin(np.abs(vouts - vcm))
-        vos = dc_offsets[idx_vos]
-
-        max_slope = slope_spline(vos)
-
-        # allowed slope deviation
-        allowed_dev = abs(max_slope) * (allowed_deviation_pct / 100)
-
-        # expand left
-        idx_left = idx_vos
+        
+        mid_idx = np.argmin(np.abs(dc_offsets))
+        max_slope = float(slope_spline(dc_offsets[mid_idx]))
+        allowed_dev = abs(max_slope) * (allowed_deviation_pct / 100.0)
+        
+        idx_left = mid_idx
         while idx_left > 0:
-            if abs(slope_spline(dc_offsets[idx_left]) - max_slope) > allowed_dev:
-                break
-            idx_left -= 1
-
-        # expand right
-        idx_right = idx_vos
+             if abs(float(slope_spline(dc_offsets[idx_left])) - max_slope) > allowed_dev:
+                  break
+             idx_left -= 1
+        idx_right = mid_idx
         while idx_right < len(dc_offsets) - 1:
-            if abs(slope_spline(dc_offsets[idx_right]) - max_slope) > allowed_dev:
-                break
-            idx_right += 1
-
-        # Get Y range
-        y_min = vouts[idx_left]
-        y_max = vouts[idx_right]
-
-        return y_min, y_max
+             if abs(float(slope_spline(dc_offsets[idx_right])) - max_slope) > allowed_dev:
+                  break
+             idx_right += 1
+             
+        return (vouts[idx_left], vouts[idx_right])
     
-    @classmethod
-    def find_integrated_noise(self, noise_results):
-        """
-        Integrates total noise PSD over frequency for all 
-        transistors starting with 'MM' and sum.
-
-        Parameters:
-        -----------
-        noise_results: dict
-            The noise results dictionary from simulations.
-
-        Returns:
-        --------
-        total_integrated_noise: float
-            Total integrated noise power (V^2) summed across all transistors.
-        """
-        total_integrated_noise = 0.0
-
-        # fixed number of frequency points per transistor
-        num_points = 55
-
-        # frequency range: 1 MHz to 500 MHz
-        f_start = 1e6
-        f_stop = 5e8
-        freqs = np.logspace(np.log10(f_start), np.log10(f_stop), num_points)
-
-        for key, noise_array in noise_results.items():
-            if not key.startswith("MM"):
-                continue
-
-            if len(noise_array) != num_points:
-                raise ValueError(f"Expected 55 points for {key}, but got {len(noise_array)}")
-
-            # extract total noise PSD values per frequency point
-            total_psd = np.array([entry[b'total'] for entry in noise_array])
-
-            # integrate noise PSD vs frequency to get noise power (V^2)
-            integrated_noise = scint.simps(total_psd, freqs)
-
-            total_integrated_noise += integrated_noise
-
-        return total_integrated_noise
-
-    @classmethod
-    def find_slew_rate(self, tran_results):
-        """
-        Finds slew rate from transient results.
-
-        Parameters:
-        -----------
-        tran_results: list of tuples
-            Transient results (time, Vout).
-        
-        Returns:
-        --------
-        slew_rate: float
-            The slew rate value (mV/ns -> V/μs).
-        """
-        time = np.array([t for t, _ in tran_results])
-        vout = np.array([v for _, v in tran_results])
-
-        # spline interpolation of Vout vs time
-        spline = interp.CubicSpline(time, vout)
-
-        # create a fine time grid for derivative evaluation
-        time_fine = np.linspace(time[0], time[-1], 50000)
-
-        # calculate derivative (slope) at fine points
-        dv_dt = spline.derivative()(time_fine)
-
-        # max absolute slope = slew rate
-        slew_rate = np.max(np.abs(dv_dt))
-        return slew_rate
-
-    @classmethod
-    def find_settle_time(self, tran_results, tol=0.005,
-                        delay=1e-9, change=50e-12, width=100e-9):
-        """
-        Finds settling time from transient results.
-
-        Parameters:
-        -----------
-        tran_results: list of tuples
-            Transient results (time, Vout).
-        tol: float
-            The tolerance band percentage for settling.
-        delay: float
-            The input delay time in seconds.
-        change: float
-            The input change time in seconds.
-        width: float
-            The input pulse width in seconds.       
-
-        Returns:
-        --------
-        settle_time: float or None
-            The settling time value (s). Returns None if never settles.
-        """
-
-        time = np.array([t for t, _ in tran_results])
-        vout = np.array([v for _, v in tran_results])
-
-        # spline interpolation of Vout vs time
-        spline = interp.CubicSpline(time, vout)
-
-        # fine time grid for better resolution
-        time_fine = np.linspace(time[0], time[-1], 50000)
-        vout_fine = spline(time_fine)
-
-        # final value: average of last 5% of samples
-        n_tail = max(5, len(vout_fine)//20)
-        v_final = float(np.mean(vout_fine[-n_tail:]))
-
-        lower, upper = v_final * (1 - tol), v_final * (1 + tol)
-
-        # check where Vout enters the ±tol band
-        in_band = (vout_fine >= lower) & (vout_fine <= upper)
-        stays_in = np.flip(np.cumprod(np.flip(in_band).astype(int)).astype(bool))
-        idx = np.argmax(stays_in)
-
-        if not stays_in[idx]:
-            return None  # never settled
-
-        t_out = time_fine[idx]
-
-        # fixed input 50% reference time
-        t_ref = (delay + width + change/2) * 1e9  # 101.025 ns
-
-        return max(0.0, t_out - t_ref)
-
-    @classmethod
-    def _get_best_crossing(self, xvec, yvec, val):
-        """
-        Finds the best crossing point where yvec crosses val using interpolation.
-
-        Parameters:
-        -----------
-        xvec: numpy array
-            The x values array.
-        yvec: numpy array
-            The y values array.
-        val: float
-            The target value to find crossing for.
-        
-        Returns:
-        --------
-        crossing_x: float
-            The x value where yvec crosses val.
-        valid: bool
-            Indicates if a valid crossing was found.
-        """
-        interp_fun = interp.InterpolatedUnivariateSpline(xvec, yvec)
-
-        def fzero(x):
-            return interp_fun(x) - val
-
-        xstart, xstop = xvec[0], xvec[-1]
-
-        try:
-            return sciopt.brentq(fzero, xstart, xstop), True
-        except ValueError:
-            return xstop, False
+    # Redundant methods removed/replaced by SpecCalc calls:
+    # find_dc_gain, find_ugbw, find_phm, find_integrated_noise, find_slew_rate, find_settle_time, _get_best_crossing
