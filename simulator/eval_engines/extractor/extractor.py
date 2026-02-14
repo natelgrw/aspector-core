@@ -156,8 +156,9 @@ class Extractor:
         Transistor size in nm.
     """
 
-    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, specs_weights, sim_flags, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map, rfeedback=1e7, rsrc=50, cload=1e-12):
+    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, specs_weights, sim_flags, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map, rfeedback=1e7, rsrc=50, cload=1e-12, mode="test_drive"):
         
+        self.mode = mode # "test_drive" or "mass_collection"
         self.dim = dim
         self.opt_params = opt_params        # Parameters being varied
         self.params_id = params_id          # All parameters for netlist
@@ -348,7 +349,7 @@ class Extractor:
         if not eval_result or len(eval_result) == 0:
             print(f"ERROR: Simulation returned empty list")
             globalsy.counterrrr += 1
-            return 0.0
+            return 0.0, {}
         
         cur_specs = OrderedDict(sorted(eval_result[0][1].items(), key=lambda k:k[0]))
         
@@ -497,16 +498,18 @@ class Extractor:
             "operating_points": op_points
         }
 
-        # Write to "simulations" directory
-        sim_dir = os.path.join(self.results_dir, "simulations")
-        os.makedirs(sim_dir, exist_ok=True)
-        
-        sim_file = os.path.join(sim_dir, f"{sim_uuid}.json")
-        with open(sim_file, 'w') as f:
-            json.dump(simulation_result, f, indent=2)
+        if self.mode == "mass_collection":
+            # Skip file writing, return full object
+            return reward1, main_specs, simulation_result
+        else:
+            # "test_drive" mode: Write to "simulations" directory
+            sim_dir = os.path.join(self.results_dir, "simulations")
+            os.makedirs(sim_dir, exist_ok=True)
+            
+            sim_file = os.path.join(sim_dir, f"{sim_uuid}.json")
+            with open(sim_file, 'w') as f:
+                json.dump(simulation_result, f, indent=2)
 
-        print(f"   [+] Exporting consolidated simulation results (ID: {sim_uuid})\n")
-
-        # globalsy.counterrrr += 1 # No longer needed/safe
-
-        return reward1
+            print(f"   [+] Exporting consolidated simulation results (ID: {sim_uuid})\n")
+    
+            return reward1, main_specs

@@ -1,10 +1,18 @@
+Version **1.4.1**
+
+Date Released: **02/14/2026**
+
+- Test drive (.json) and mass collection (.parquet) modes for data collection
+- Automatic progress saving for Sobol and TuRBO-M search with ability to load previous simulation results into current algorithm memory
+- Processing of multiple topologies in a single pipeline request
+
 Version **1.4.0**
 
 Date Released: **02/06/2026**
 
 - Complete redesign of op-amp netlist testbenches
 - Corrected spec measurement and extraction functions
-- New search algorithms implemented to explore design space, including Sobol, LHS, and more
+- New Sobol and TuRBO-M algorithms implemented to explore design space
 - Updated simulation and data extraction pipeline accomodating new testbench
 
 Version **1.3.0**

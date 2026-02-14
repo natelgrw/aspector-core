@@ -138,7 +138,7 @@ class ACTB(object):
         cmrr = None
         psrr = None
 
-        linearity = None
+        # linearity = None # linearity is now reported as THD
         output_voltage_swing = None
         integrated_noise = None
         slew_rate = None
@@ -327,7 +327,7 @@ class ACTB(object):
             vos = vos,
             cmrr = cmrr, 
             psrr = psrr, 
-            linearity = thd,
+            thd = thd,
             output_voltage_swing = output_voltage_swing,
             integrated_noise = integrated_noise,
             slew_rate = slew_rate,

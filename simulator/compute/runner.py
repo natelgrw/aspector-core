@@ -17,13 +17,13 @@ def worker_task(args):
     idx, config, extractor = args
     try:
         # Run extraction
-        extractor(config, sim_id=idx)
-        return True, None
+        val = extractor(config, sim_id=idx)
+        return True, (idx, val)
     except Exception as e:
         # Return error info instead of writing to file directly if possible,
         # or write to discrete log.
         err_msg = f"Sim {idx} Failed: {str(e)}"
-        return False, err_msg
+        return False, (idx, err_msg)
 
 def run_parallel_simulations(samples, extractor, n_workers):
     """
@@ -42,12 +42,15 @@ def run_parallel_simulations(samples, extractor, n_workers):
     Yields:
     -------
     tuple
-        (completed_count, total_count, elapsed_time)
+        (completed_count, total_count, elapsed_time, result_data)
+        result_data is (index, (reward, specs)) or None if failed
     """
     
     task_args = []
     for i, config in enumerate(samples):
-        task_args.append((i + 1, config, extractor))
+        # i is 0-based index in samples list. 
+        # sim_id will be i+1 for logging, but we return i for array indexing
+        task_args.append((i, config, extractor))
 
     total = len(samples)
     completed = 0
@@ -61,17 +64,23 @@ def run_parallel_simulations(samples, extractor, n_workers):
             # We use imap_unordered to get results as they finish 
             # for real-time progress reporting
             for result in pool.imap_unordered(worker_task, task_args, chunksize=chunk_size):
-                success, error = result
+                success, payload = result
                 
-                if not success and error:
+                # Payload is now (idx, data) for success, or (idx, err) for fail
+                idx, data = payload
+                
+                if not success:
                     # Ideally log this error to a file
                     with open("simulation_errors.log", "a") as f:
-                        f.write(error + "\n")
+                        f.write(f"ID {idx}: {data}\n")
+                    final_data = (idx, (0.0, {})) # Default fail with ID
+                else:
+                    final_data = (idx, data)
                 
                 completed += 1
                 elapsed = time.time() - start_time
                 
-                yield (completed, total, elapsed)
+                yield (completed, total, elapsed, final_data)
                 
     except KeyboardInterrupt:
         # Re-raise to let caller handle cleanup/exit

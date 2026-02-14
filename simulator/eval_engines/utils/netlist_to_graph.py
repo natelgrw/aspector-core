@@ -2,7 +2,11 @@ import re
 import json
 import os
 
-def parse_netlist_to_graph(netlist_path, output_dir, sim_id=1, topology_id=None):
+def parse_netlist_to_graph(netlist_path, output_dir, sim_id=1, topology_id=None, format="json"):
+    """
+    Parses netlist to graph.
+    format: "json" (Default, for debug) or "pt" (PyTorch, for ML/Mass Collection)
+    """
     netlist_name = os.path.basename(netlist_path)
     if topology_id is None:
         topology_id = os.path.splitext(netlist_name)[0]
@@ -11,6 +15,7 @@ def parse_netlist_to_graph(netlist_path, output_dir, sim_id=1, topology_id=None)
     nets = set()
     connections = [] # (component, net, pin)
     
+    # ... Parsing Logic ...
     with open(netlist_path, 'r') as f:
         lines = f.readlines()
         
@@ -129,11 +134,85 @@ def parse_netlist_to_graph(netlist_path, output_dir, sim_id=1, topology_id=None)
         }
     }
     
-    output_path = os.path.join(output_dir, "graph.json")
-    with open(output_path, 'w') as f:
-        json.dump(graph_obj, f, indent=2)
+    output_path = None
+    
+    if format == "json":
+        output_path = os.path.join(output_dir, "graph.json")
+        with open(output_path, 'w') as f:
+            json.dump(graph_obj, f, indent=2)
+            
+    elif format == "pt":
+        # Save as PT
+        output_path = save_graph_as_pt(graph_obj, output_dir)
         
     return output_path
+
+def save_graph_as_pt(graph_obj, output_dir):
+    """
+    Converts graph object to PyTorch Geometric .pt format for NeurIPS standard datasets.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+        
+    # Map Node Types to Integers
+    # 0: Net, 1: NFET, 2: PFET, 3: Resistor, 4: Capacitor, 5: Other
+    type_map = {'NET': 0, 'nfet': 1, 'pfet': 2, 'resistor': 3, 'capacitor': 4}
+    
+    nodes = list(graph_obj['graph']['nodes'].keys())
+    node_to_idx = {name: i for i, name in enumerate(nodes)}
+    
+    node_features = []
+    for name in nodes:
+        props = graph_obj['graph']['nodes'][name]
+        if props['type'] == 'NET':
+             feat = 0
+        else:
+             subtype = props.get('subtype', 'unknown')
+             feat = type_map.get(subtype, 5)
+        
+        # Simple One-Hot or Embedding index
+        node_features.append(feat)
+        
+    x = torch.tensor(node_features, dtype=torch.long).unsqueeze(1)
+    
+    # Edges
+    edge_indices = []
+    edge_types = [] 
+    
+    # Map Pin types to integers?
+    # D:1, G:2, S:3, B:4, 1:5, 2:6
+    pin_map = {'D': 1, 'G': 2, 'S': 3, 'B': 4, '1': 5, '2': 6}
+    
+    for edge in graph_obj['graph']['edges']:
+        src = node_to_idx[edge['source']]
+        dst = node_to_idx[edge['target']]
+        
+        # Undirected in PyG usually means 2 directed edges, but Hetero?
+        # Component -> Net
+        edge_indices.append([src, dst])
+        edge_types.append(pin_map.get(edge['pin'], 0))
+        
+        # Net -> Component (Reverse)
+        edge_indices.append([dst, src])
+        edge_types.append(pin_map.get(edge['pin'], 0)) # Symmetric connection
+        
+    edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_types, dtype=torch.long)
+    
+    # Save Dict (compatible with PyG Data(x=x, edge_index=edge_index, ...))
+    data = {
+        'x': x,
+        'edge_index': edge_index,
+        'edge_attr': edge_attr,
+        'sim_id': graph_obj['sim_id'],
+        'topology_id': graph_obj['topology_id']
+    }
+    
+    pt_path = os.path.join(output_dir, "graph.pt")
+    torch.save(data, pt_path)
+    return pt_path
 
 def extract_sizing_map(netlist_path):
     """

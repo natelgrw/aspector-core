@@ -136,7 +136,7 @@ class ACTB(object):
         cmrr = None
         psrr = None
 
-        linearity = None
+        # linearity = None # linearity is now reported as THD
         output_voltage_swing = None
         integrated_noise = None
         slew_rate = None
@@ -350,8 +350,6 @@ class ACTB(object):
         # 6. THD
         if thd_results:
              thd = self.find_thd(thd_results)
-             if thd is not None:
-                  linearity = thd
 
         # Return Results (Nulls preserved)
         results = dict(
@@ -365,7 +363,7 @@ class ACTB(object):
             vos = vos,
             cmrr = cmrr, 
             psrr = psrr, 
-            linearity = linearity,
+            thd = thd,
             output_voltage_swing = output_voltage_swing,
             integrated_noise = integrated_noise,
             slew_rate = slew_rate,
@@ -585,6 +583,7 @@ class ACTB(object):
         if len(dc_offsets) < 4: return None
 
         spline = interp.UnivariateSpline(dc_offsets, vout_diffs, s=0)
+        # For differential, we want Vout_diff = 0
         def root_func(x): return float(spline(x))
         try:
             return sciopt.brentq(root_func, dc_offsets[0], dc_offsets[-1])
