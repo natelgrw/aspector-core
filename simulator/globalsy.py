@@ -98,8 +98,8 @@ testbench_params = {
     },
     'VCM': {
         'type': 'continuous',
-        'lb': 0.15,
-        'ub': 'VDD - 0.15'
+        'lb': '0.425 * vdd_nominal',
+        'ub': '0.575 * vdd_nominal'
     },
     'Tempc': {
         'type': 'continuous',

@@ -443,3 +443,63 @@ class Design(list):
         new = copy(self)
         new.specs = deepcopy(self.specs)
         return new
+
+def extract_sizing_map(netlist_path):
+    """
+    Parses a Spectre netlist to map component parameters to optimization variables.
+    
+    Returns:
+    --------
+    dict
+        { 
+          "M1": { "l": "nA1", "nfin": "nB1" },
+          "M2": { "l": "nA2", ... } 
+        }
+    """
+    mapping = {}
+    
+    with open(netlist_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Ignore comments
+            if line.startswith('*') or line.startswith('//'):
+                continue
+            
+            parts = line.split()
+            if not parts:
+                continue
+                
+            name = parts[0]
+            
+            # Filter out obvious non-components
+            if '=' in name: 
+                continue
+
+            # Check for simulation directives that might mask as components
+            # e.g. "mytran tran ...", "modelParameter info ..."
+            if len(parts) > 1 and parts[1] in ['options', 'tran', 'dc', 'ac', 'noise', 'info', 'pz', 'sp', 'pss', 'hb', 'envlp']:
+                continue
+
+            # Only care about MOS, R, C
+            # Using tuple for startswith is cleaner
+            if name.upper().startswith(('M', 'R', 'C')):
+                # Filter Testbench artifacts
+                if any(tb in name for tb in ['Rin', 'Rfeed', 'Rload', 'Ctran', 'Cload', 'Rsw', 'Rsrc', 'Rshunt', 'R_unity']):
+                    continue
+                    
+                # Scan for parameters
+                # Format: MM3 V... nfet l=nA1 nfin=nB1 ...
+                comp_map = {}
+                for part in parts:
+                    if '=' in part:
+                        key, val = part.split('=', 1)
+                        # clean up potential parens or formatting
+                        key = key.strip()
+                        val = val.strip().replace('(', '').replace(')', '')
+                        
+                        comp_map[key] = val
+                        
+                if comp_map:
+                    mapping[name] = comp_map
+                    
+    return mapping

@@ -115,13 +115,16 @@ class ACTB(object):
         # Prioritize STB loop for stability/gain analysis.
         # AC Analysis (Differential)
         # Open Loop Analysis (prioritize stb_ol)
-        ac_result_ol = results.get('stb_ol') or results.get('acswp-000_ac') or results.get('stb_loop')
+        ac_result_ol = results.get('stb_ol') or results.get('acswp-000_ac') or results.get('stb_loop') or results.get('stb_sim')
         ac_result_cm = results.get('acswp-001_ac')
         dc_results = results.get('dcOp_sim') or results.get('dcswp-500_dcOp') or results.get('vos_sim')
         noise_results = results.get('noise_sim') or results.get('noise')
         xf_resultsdict = results.get('xf_sim')
-        thd_results = results.get('thd_sim')
-        slew_results = results.get('slew_sim') 
+        thd_results = results.get('thd_pss.fd') or results.get('thd_pss') or results.get('thd_extract') or results.get('thd_sim')
+        slew_results = results.get('slew_large_tran') or results.get('slew_sim')
+        settle_results = results.get('settle_tran') or results.get('settle_sim')
+        xf_cm_results = results.get('xf_cm_sim')
+        xf_psrr_results = results.get('xf_psrr') 
 
         # --- Initialize Specs to None ---
         vos = None
@@ -154,7 +157,13 @@ class ACTB(object):
 
         # 1. DC Processing
         if dc_results:
-            vcm = dc_results.get("cm", 0.0)
+            vcm = 0.0
+            if params and 'vcm' in params:
+                 vcm = float(params['vcm'])
+            elif results.get('vcm'):
+                 vcm = float(results['vcm'])
+            else:
+                 vcm = dc_results.get("cm", 0.0)
             
             # Identify VDD if possible (check params or DC results)
             vdd_val = 0.0
@@ -298,15 +307,23 @@ class ACTB(object):
         
         # 3. CMRR / PSRR / Closed Loop Gain Processing
         if xf_resultsdict:
-             if gain_ol_lin is not None and gain_ol_lin != 0:
-                  # Use abs() to handle potential polarity inversions
-                  psrr = self.find_psrr(xf_resultsdict, np.abs(gain_ol_lin))
-                  cmrr = self.find_cmrr_xf(xf_resultsdict, np.abs(gain_ol_lin))
-             
-             # Calculate Closed Loop Gain (from 'in_dc' or 'V2')
+             # Calculate Closed Loop Gain (from 'in_dc' or 'V2' or 'Vsig')
              gain_cl_lin = self.find_closed_loop_gain(xf_resultsdict)
              if gain_cl_lin is not None and gain_cl_lin > 0:
                  gain_cl = 20 * np.log10(gain_cl_lin)
+        
+        # CMRR from dedicated shim or main XF
+        if xf_cm_results and gain_ol_lin is not None:
+             cmrr = self.find_cmrr_xf(xf_cm_results, np.abs(gain_ol_lin))
+        elif xf_resultsdict and gain_ol_lin is not None:
+              cmrr = self.find_cmrr_xf(xf_resultsdict, np.abs(gain_ol_lin))
+
+        # PSRR from dedicated shim or main XF
+        if xf_psrr_results and gain_ol_lin is not None:
+             psrr = self.find_psrr(xf_psrr_results, np.abs(gain_ol_lin))
+        elif xf_resultsdict and gain_ol_lin is not None:
+             psrr = self.find_psrr(xf_resultsdict, np.abs(gain_ol_lin))
+
         
         # Fallback for Gain CL if XF missing (e.g. from STB CL)
         if gain_cl is None and results.get('stb_cl'):
@@ -333,7 +350,7 @@ class ACTB(object):
              t_val_p = slew_results.get('Voutp')
              t_val_n = slew_results.get('Voutn')
              
-             if not len(time) and 'sweep_values' in slew_results:
+             if (time is None or len(time) == 0) and 'sweep_values' in slew_results:
                   time = slew_results['sweep_values']
 
              if t_val_p is not None and len(t_val_p) > 0:
@@ -342,38 +359,58 @@ class ACTB(object):
                   else:
                        diff_tran = np.array(t_val_p) 
                   
-                  tran_data = list(zip(time, diff_tran))
+                  min_len = min(len(time), len(diff_tran))
+                  tran_data = list(zip(time[:min_len], diff_tran[:min_len]))
                   
                   slew_rate = SpecCalc.find_slew_rate(tran_data)
+        
+        if settle_results:
+             time = settle_results.get('time', [])
+             t_val_p = settle_results.get('Voutp')
+             t_val_n = settle_results.get('Voutn')
+             
+             if (time is None or len(time) == 0) and 'sweep_values' in settle_results:
+                  time = settle_results['sweep_values']
+
+             if t_val_p is not None and len(t_val_p) > 0:
+                  if t_val_n is not None and len(t_val_n) == len(t_val_p):
+                       diff_tran = np.array(t_val_p) - np.array(t_val_n)
+                  else:
+                       diff_tran = np.array(t_val_p) 
+                  
+                  min_len = min(len(time), len(diff_tran))
+                  tran_data = list(zip(time[:min_len], diff_tran[:min_len]))
+                  
                   settle_time = SpecCalc.find_settle_time(tran_data)
 
         # 6. THD
         if thd_results:
              thd = self.find_thd(thd_results)
 
-        # Return Results (Nulls preserved)
+        # Return Results (Nulls replaced with extreme penalties)
         results = dict(
-            gain_ol = gain_ol,
-            gain_cl = gain_cl,
-            ugbw = ugbw,
-            pm = phm,
-            gm = gm,
-            area = area,
-            power = power,
-            vos = vos,
-            cmrr = cmrr, 
-            psrr = psrr, 
-            thd = thd,
-            output_voltage_swing = output_voltage_swing,
-            integrated_noise = integrated_noise,
-            slew_rate = slew_rate,
-            settle_time = settle_time,
+            gain_ol = gain_ol if gain_ol is not None else -1000.0,
+            gain_cl = gain_cl if gain_cl is not None else -1000.0,
+            ugbw = ugbw if ugbw is not None else 1.0,
+            pm = phm if phm is not None else -180.0,
+            gm = gm if gm is not None else -100.0,
+            area = area if area is not None else 1.0,
+            power = power if power is not None else 1.0,
+            vos = vos if vos is not None else 10.0,
+            cmrr = cmrr if cmrr is not None else -1000.0, 
+            psrr = psrr if psrr is not None else -1000.0, 
+            thd = thd if thd is not None else 1000.0,
+            output_voltage_swing = output_voltage_swing if output_voltage_swing is not None else 0.0,
+            integrated_noise = integrated_noise if integrated_noise is not None else 10.0,
+            slew_rate = slew_rate if slew_rate is not None else 1.0,
+            settle_time = settle_time if settle_time is not None else 1.0,
             valid = valid,
             zregion_of_operation_MM = region_MM,
             zzgm_MM = gm_MM,
             zzids_MM = ids_MM,
             zzvds_MM = vds_MM,
-            zzvgs_MM = vgs_MM
+            zzvgs_MM = vgs_MM, 
+            dc_gain = gain_ol if gain_ol is not None else -1000.0
         )
         return results
 
@@ -381,11 +418,11 @@ class ACTB(object):
     def find_closed_loop_gain(self, xf_results):
         """
         Finds Closed Loop Gain from XF analysis.
-        Target source is 'V2' (or 'in_dc').
+        Target source is 'V2', 'in_dc', or 'Vsig'.
         """
         keys = xf_results.keys()
         # Look for the input source key
-        input_key = next((k for k in keys if "V2" in k or "in_dc" in k), None)
+        input_key = next((k for k in keys if "V2" in k or "in_dc" in k or "Vsig" in k), None)
         
         if input_key:
             vals = xf_results[input_key] 
@@ -454,15 +491,19 @@ class ACTB(object):
     @classmethod
     def find_thd(self, thd_results):
         """
-        Calculates Total Harmonic Distortion (THD) from transient simulation.
+        Calculates Total Harmonic Distortion (THD) from transient or PSS simulation.
         Returns THD in dBc.
         """
-        time = thd_results.get('time', [])
-        # Handle case where keys might be just lists without 'time' key if simple dict
-        if (time is None or len(time) == 0) and 'sweep_values' in thd_results:
-             time = thd_results['sweep_values']
-             
-        # Extract Differential Output
+        # Check if this is PSS frequency domain data
+        sweep_vars = thd_results.get('sweep_vars', [])
+        sweep_values = thd_results.get('sweep_values', [])
+        
+        is_pss = False
+        if 'harmonic' in sweep_vars or 'freq' in sweep_vars:
+            is_pss = True
+        elif len(sweep_values) > 1 and sweep_values[1] > 1e6: # Frequencies are large (e.g. 100MHz)
+            is_pss = True
+            
         v_p = thd_results.get('Voutp')
         v_n = thd_results.get('Voutn')
         
@@ -475,50 +516,73 @@ class ACTB(object):
         else:
              v_sig = v_p
              
-        if len(time) != len(v_sig):
-             # Try to recover if lengths slightly mismatch due to artifacts
-             min_len = min(len(time), len(v_sig))
-             time = time[:min_len]
-             v_sig = v_sig[:min_len]
-        
-        # FFT
-        n = len(v_sig)
-        if n < 2: return None
-        
-        # Windowing (Hanning) to reduce leakage
-        window = np.hanning(n)
-        v_windowed = v_sig * window
-        
-        fft_vals = np.fft.rfft(v_windowed)
-        fft_mag = np.abs(fft_vals) / n
-        
-        # Remove DC
-        fft_mag[0] = 0
-        
-        # Find Fundamental
-        fund_idx = np.argmax(fft_mag)
-        fund_mag = fft_mag[fund_idx]
-        
-        if fund_mag < 1e-9: return None # No signal
-        
-        # Sum Harmonics (2nd to 10th)
-        harm_power = 0
-        for i in range(2, 11):
-             h_idx = fund_idx * i
-             # Allow small window around exact harmonic index
-             if h_idx < len(fft_mag):
-                  # Simple peak finding around expected index
-                  # search range +/- 2 bins
-                  start = max(0, h_idx - 2)
-                  end = min(len(fft_mag), h_idx + 3)
-                  h_mag = np.max(fft_mag[start:end])
-                  harm_power += h_mag**2
-        
-        thd_lin = np.sqrt(harm_power) / fund_mag
-        if thd_lin <= 0: return -100.0 # Perfect?
-        
-        thd_db = 20 * np.log10(thd_lin)
-        return thd_db
+        if is_pss:
+            # PSS Frequency Domain Processing
+            fft_mag = np.abs(v_sig)
+            
+            # Remove DC
+            fft_mag[0] = 0
+            
+            # Find Fundamental
+            fund_idx = np.argmax(fft_mag)
+            fund_mag = fft_mag[fund_idx]
+            
+            if fund_mag < 1e-9: return None
+            
+            # Sum Harmonics (2nd to 10th)
+            harm_power = 0
+            for i in range(2, 11):
+                h_idx = fund_idx * i
+                if h_idx < len(fft_mag):
+                    harm_power += fft_mag[h_idx]**2
+                    
+            if harm_power == 0: return None
+            
+            thd_lin = np.sqrt(harm_power) / fund_mag
+            if thd_lin <= 0: return -100.0
+            
+            return 20 * np.log10(thd_lin)
+            
+        else:
+            # Transient Time Domain Processing (Legacy)
+            time = thd_results.get('time', [])
+            if (time is None or len(time) == 0) and 'sweep_values' in thd_results:
+                 time = thd_results['sweep_values']
+                 
+            if len(time) != len(v_sig):
+                 min_len = min(len(time), len(v_sig))
+                 time = time[:min_len]
+                 v_sig = v_sig[:min_len]
+            
+            n = len(v_sig)
+            if n < 2: return None
+            
+            window = np.hanning(n)
+            v_windowed = v_sig * window
+            
+            fft_vals = np.fft.rfft(v_windowed)
+            fft_mag = np.abs(fft_vals) / n
+            
+            fft_mag[0] = 0
+            
+            fund_idx = np.argmax(fft_mag)
+            fund_mag = fft_mag[fund_idx]
+            
+            if fund_mag < 1e-9: return None
+            
+            harm_power = 0
+            for i in range(2, 11):
+                 h_idx = fund_idx * i
+                 if h_idx < len(fft_mag):
+                      start = max(0, h_idx - 2)
+                      end = min(len(fft_mag), h_idx + 3)
+                      h_mag = np.max(fft_mag[start:end])
+                      harm_power += h_mag**2
+            
+            thd_lin = np.sqrt(harm_power) / fund_mag
+            if thd_lin <= 0: return -100.0
+            
+            return 20 * np.log10(thd_lin)
 
     @classmethod
     def extract_dc_sweep(self, results):
@@ -530,7 +594,23 @@ class ACTB(object):
         vout_diffs = []
         
         # Method 1: Consolidated Swept DC Analysis (Preferred)
-        if 'dc_swing' in results:
+        if 'swing_sweep' in results:
+            swing_res = results['swing_sweep']
+            if 'sweep_values' in swing_res and 'sweep_vars' in swing_res:
+                # Assuming sweep_values is a list of tuples or list, but for 1 param it's often a list
+                # sweep_values typical format in libpsf is list of floats for simple sweep
+                offsets_in = swing_res['sweep_values']
+                
+                if 'Voutp' in swing_res and 'Voutn' in swing_res:
+                    v_p = np.array(swing_res['Voutp'])
+                    v_n = np.array(swing_res['Voutn'])
+                    # If dimensions mismatch, flatten or check
+                    # They likely match sweep_values length
+                    v_diff = v_p - v_n
+                    return np.array(offsets_in), v_diff
+                elif 'Voutp' in swing_res:
+                    return np.array(offsets_in), np.array(swing_res['Voutp'])
+        elif 'dc_swing' in results:
             swing_res = results['dc_swing']
             if 'sweep_values' in swing_res and 'sweep_vars' in swing_res:
                 # Assuming sweep_values is a list of tuples or list, but for 1 param it's often a list
@@ -648,7 +728,7 @@ class ACTB(object):
                   break
              idx_right += 1
              
-        return (vouts[idx_left], vouts[idx_right])
+        return abs(vouts[idx_right] - vouts[idx_left])
     
     # Redundant methods removed/replaced by SpecCalc calls:
     # find_dc_gain, find_ugbw, find_phm, find_integrated_noise, find_slew_rate, find_settle_time, _get_best_crossing

@@ -48,7 +48,7 @@ def suppress_output():
 # ===== Constants ===== #
 
 
-IGNORE_LIST = ['*.info', '*.primitives', '*.subckts', 'logFile']
+IGNORE_LIST = ['*.primitives', '*.subckts', 'logFile']
 
 OCEAN_TEMPLATE_BOTH = """
 resultsDir = \"%(dir_file_path)s\"

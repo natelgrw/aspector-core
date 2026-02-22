@@ -38,7 +38,7 @@ class EnvironmentConfig(object):
         Upper bounds for parameters.
     """
 
-    def __init__(self, netlist_path, type, specs, params, param_lbs, param_ubs):
+    def __init__(self, netlist_path, type, specs, params, param_lbs, param_ubs, results_dir="results"):
 
         self.netlist_path = netlist_path
         self.type = type
@@ -49,7 +49,7 @@ class EnvironmentConfig(object):
         
         # configuration dictionary with default structure
         self.configs = {
-            "database_dir": "/homes/natelgrw/Documents/titan_foundation_model/results",
+            "database_dir": results_dir,
             "measurement": {
                 "meas_params": {},
                 "testbenches": {

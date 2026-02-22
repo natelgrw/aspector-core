@@ -59,7 +59,7 @@ class SobolSizingGenerator:
         # scramble=True is generally recommended for better uniformity in lower sample counts
         self.engine = qmc.Sobol(d=self.dim, scramble=True, seed=seed)
 
-    def generate(self, n_samples=None, u_samples=None, robust_env=False):
+    def generate(self, n_samples=None, u_samples=None, robust_env=False, start_idx=0):
         """
         Generate n_samples of valid design configurations.
 
@@ -70,6 +70,7 @@ class SobolSizingGenerator:
                                             If dim == self.dim_sizing, fixes environment to Nominal OR Random if robust_env=True.
             robust_env (bool): If True and u_samples provides sizing only, the environment 
                                parameters are randomly sampled rather than fixed.
+            start_idx (int): Index to resume Sobol sequence from.
 
         Returns:
             list[dict]: List of dictionaries, each containing a full set of parameters.
@@ -93,6 +94,8 @@ class SobolSizingGenerator:
                   raise ValueError(f"Provided samples dim {input_dim} matches neither full ({self.dim}) nor sizing ({self.dim_sizing})")
         else:
              if n_samples is None: raise ValueError("Must provide n_samples if u_samples is None")
+             if start_idx > 0:
+                 self.engine.fast_forward(start_idx)
              u_samples = self.engine.random(n=n_samples)
         
         configs = []
@@ -132,8 +135,8 @@ class SobolSizingGenerator:
                 
                 # VCM
                 u_vcm = row[col_idx]; col_idx += 1
-                vcm_lb = 0.15
-                vcm_ub = vdd - 0.15
+                vcm_lb = 0.425 * vdd_nom
+                vcm_ub = 0.575 * vdd_nom
                 if vcm_ub < vcm_lb: vcm_ub = vcm_lb
                 vcm = vcm_lb + u_vcm * (vcm_ub - vcm_lb)
                 config['vcm'] = vcm
@@ -196,8 +199,8 @@ class SobolSizingGenerator:
                                                   globalsy.testbench_params['Tempc']['ub'])
                     
                     # Random VCM
-                    vcm_lb = 0.15
-                    vcm_ub = config['vdd'] - 0.15
+                    vcm_lb = 0.425 * vdd_nom
+                    vcm_ub = 0.575 * vdd_nom
                     if vcm_ub > vcm_lb:
                         config['vcm'] = rng.uniform(vcm_lb, vcm_ub)
                         
@@ -292,8 +295,9 @@ class SobolSizingGenerator:
         
         param_list = self.sizing_params
         X_rows = []
+        valid_idx = []
         
-        for idx, row in df.iterrows():
+        for i_row, (idx, row) in enumerate(df.iterrows()):
             u_row = []
             
             # Helper for log inverse
@@ -354,12 +358,13 @@ class SobolSizingGenerator:
                     
                 if len(u_row) == len(param_list):
                     X_rows.append(u_row)
+                    valid_idx.append(i_row)
                 
             except Exception as e:
                 # Skip bad rows
                 continue
                 
-        return torch.tensor(X_rows, dtype=torch.double)
+        return torch.tensor(X_rows, dtype=torch.double), valid_idx
 
 
 

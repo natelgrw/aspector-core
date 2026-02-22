@@ -151,7 +151,7 @@ class ASPECTOR_TurboM:
         y_vals = []
         for specs in specs_list:
             if specs is None or not specs.get('valid', False):
-                y_vals.append(1e6) # Penalty
+                y_vals.append([1e6]) # Penalty
                 continue
 
             cost = 0.0
@@ -347,7 +347,10 @@ class ASPECTOR_TurboM:
                 train_Y = self.Y[indices]
                 
                 # Standardize Y locally for GP stability
-                train_Y_std = (train_Y - train_Y.mean()) / (train_Y.std() + 1e-6)
+                y_std = train_Y.std()
+                if torch.isnan(y_std) or y_std == 0.0:
+                    y_std = 1.0
+                train_Y_std = (train_Y - train_Y.mean()) / (y_std + 1e-6)
                 
                 # Fit
                 covar = ScaleKernel(MaternKernel(nu=2.5, ard_num_dims=self.dim, lengthscale_prior=GammaPrior(3.0, 6.0)))

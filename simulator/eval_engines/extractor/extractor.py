@@ -15,7 +15,8 @@ import uuid
 import re
 from collections import OrderedDict
 from simulator import globalsy
-from simulator.eval_engines.spectre.measurements.single_ended_meas_man import OpampMeasMan
+import yaml
+import importlib
 
 def extract_parameter_names(scs_file):
     """
@@ -156,9 +157,10 @@ class Extractor:
         Transistor size in nm.
     """
 
-    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, specs_weights, sim_flags, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map, rfeedback=1e7, rsrc=50, cload=1e-12, mode="test_drive"):
+    def __init__(self, dim, opt_params, params_id, specs_id, specs_ideal, specs_weights, sim_flags, vcm, vdd, tempc, ub, lb, yaml_path, fet_num, results_dir, netlist_name, size_map, rfeedback=1e7, rsrc=50, cload=1e-12, mode="test_drive", sim_mode="complete"):
         
         self.mode = mode # "test_drive" or "mass_collection"
+        self.sim_mode = sim_mode # "efficient" or "complete"
         self.dim = dim
         self.opt_params = opt_params        # Parameters being varied
         self.params_id = params_id          # All parameters for netlist
@@ -239,6 +241,56 @@ class Extractor:
 
         return reward
 
+    def _return_bad_specs(self, params):
+        # Calculate area
+        area = 0.0
+        effective_fin_width = 100e-9 
+        for key, val in params.items():
+            if key.startswith('nA'):
+                suffix = key[2:]
+                width_key = 'nB' + suffix
+                if width_key in params:
+                    area += (val * params[width_key])
+        area *= effective_fin_width
+        
+        cap_density = 2e-3
+        res_area_coeff = 1e-17
+        for key, val in params.items():
+            if key.startswith('nC') and val > 0:
+                area += (val / cap_density)
+            elif key.startswith('nR') and val > 0:
+                area += (val * res_area_coeff)
+                
+        bad_specs = {
+            'gain_ol': -1000.0,
+            'gain_cl': -1000.0,
+            'ugbw': 1.0,
+            'pm': -180.0,
+            'gm': -100.0,
+            'area': area,
+            'power': 1.0,
+            'vos': 10.0,
+            'cmrr': -1000.0,
+            'psrr': -1000.0,
+            'thd': 1000.0,
+            'output_voltage_swing': 0.0,
+            'integrated_noise': 10.0,
+            'slew_rate': 1.0,
+            'settle_time': 1.0,
+            'valid': False,
+            'zregion_of_operation_MM': {},
+            'zzgm_MM': {},
+            'zzids_MM': {},
+            'zzvds_MM': {},
+            'zzvgs_MM': {},
+            'dc_gain': -1000.0
+        }
+        
+        globalsy.counterrrr += 1
+        if self.mode == "mass_collection":
+            return 0.0, bad_specs, {}
+        return 0.0, bad_specs
+
     def __call__(self, x, sim_id=None):
         """
         Main execution function for Sobol sampling loop.
@@ -296,6 +348,11 @@ class Extractor:
                 opt_idx += 1
 
         # Common Logic: creation of cadence simulation environment
+        with open(self.yaml_path, 'r') as f:
+            yaml_data = yaml.safe_load(f)
+        tb_module_name = yaml_data['measurement']['testbenches']['ac_dc']['tb_module']
+        meas_module = importlib.import_module(tb_module_name)
+        OpampMeasMan = meas_module.OpampMeasMan
         sim_env = OpampMeasMan(self.yaml_path)
 
         # Print iteration steps
@@ -334,22 +391,59 @@ class Extractor:
         # run_gatekeeper typically enables basic startup checks (DC, STB)
         full_params["run_gatekeeper"] = 1 # Always run primary gatekeeper
         
-        # RUN FULL CHARACTERIZATION (Tier 2 enabled)
-        full_params["run_full_char"] = 1
-        
-        param_val = [OrderedDict(full_params)]
-
-        # calls evaluate() to obtain simulation specs and sort them
-        sim_env.ver_specs['results_dir'] = self.results_dir # Inject dir for meas man
-        eval_result = sim_env.evaluate(param_val)
+        if self.sim_mode == "efficient":
+            full_params["run_full_char"] = 0
+            param_val = [OrderedDict(full_params)]
+            sim_env.ver_specs['results_dir'] = self.results_dir
+            eval_result = sim_env.evaluate(param_val)
+            
+            if not eval_result or len(eval_result) == 0:
+                return self._return_bad_specs(full_params)
+                
+            specs = eval_result[0][1]
+            region_MM = specs.get('zregion_of_operation_MM', {})
+            
+            ops_good = True
+            if not region_MM:
+                ops_good = False
+            else:
+                for mm, region in region_MM.items():
+                    if region == 0.0 or region == 4.0:
+                        ops_good = False
+                        break
+            
+            if not ops_good:
+                print(f"   [-] Transistor ops bad. Skipping Tier 2.")
+                return self._return_bad_specs(full_params)
+                
+            # Check AC performance
+            gain_ol = specs.get('gain_ol')
+            pm = specs.get('pm')
+            
+            gain_ol = gain_ol if gain_ol is not None else -1000.0
+            pm = pm if pm is not None else -180.0
+            
+            if gain_ol < 20.0 or pm < 0.0:
+                print(f"   [-] AC performance bad (Gain: {gain_ol:.2f}dB, PM: {pm:.2f}°). Skipping Tier 2.")
+                return self._return_bad_specs(full_params)
+                
+            # If good, run full char
+            full_params["run_full_char"] = 1
+            param_val = [OrderedDict(full_params)]
+            eval_result = sim_env.evaluate(param_val)
+        else:
+            # RUN FULL CHARACTERIZATION (Tier 2 enabled)
+            full_params["run_full_char"] = 1
+            param_val = [OrderedDict(full_params)]
+            sim_env.ver_specs['results_dir'] = self.results_dir # Inject dir for meas man
+            eval_result = sim_env.evaluate(param_val)
         
         print(f"   [+] Completed measurements      ")
         
         # Error handling: check if evaluation returned valid results
         if not eval_result or len(eval_result) == 0:
             print(f"ERROR: Simulation returned empty list")
-            globalsy.counterrrr += 1
-            return 0.0, {}
+            return self._return_bad_specs(full_params)
         
         cur_specs = OrderedDict(sorted(eval_result[0][1].items(), key=lambda k:k[0]))
         
@@ -502,11 +596,8 @@ class Extractor:
             # Skip file writing, return full object
             return reward1, main_specs, simulation_result
         else:
-            # "test_drive" mode: Write to "simulations" directory
-            sim_dir = os.path.join(self.results_dir, "simulations")
-            os.makedirs(sim_dir, exist_ok=True)
-            
-            sim_file = os.path.join(sim_dir, f"{sim_uuid}.json")
+            # "test_drive" mode: Write to results_dir directly (which should be algo specific now)
+            sim_file = os.path.join(self.results_dir, f"{sim_uuid}.json")
             with open(sim_file, 'w') as f:
                 json.dump(simulation_result, f, indent=2)
 

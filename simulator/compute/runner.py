@@ -73,7 +73,7 @@ def run_parallel_simulations(samples, extractor, n_workers):
                     # Ideally log this error to a file
                     with open("simulation_errors.log", "a") as f:
                         f.write(f"ID {idx}: {data}\n")
-                    final_data = (idx, (0.0, {})) # Default fail with ID
+                    final_data = (idx, (0.0, {'valid': False})) # Default fail with ID
                 else:
                     final_data = (idx, data)
                 

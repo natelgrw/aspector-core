@@ -1,3 +1,9 @@
+Version **1.4.2**
+
+Date Released: **02/22/2026**
+
+- Pipeline upgrades to accomodate new testbench and netlist format
+
 Version **1.4.1**
 
 Date Released: **02/14/2026**
