@@ -241,7 +241,7 @@ class Extractor:
 
         return reward
 
-    def _return_bad_specs(self, params):
+    def _get_default_bad_specs(self, params):
         # Calculate area
         area = 0.0
         effective_fin_width = 100e-9 
@@ -285,6 +285,10 @@ class Extractor:
             'zzvgs_MM': {},
             'dc_gain': -1000.0
         }
+        return bad_specs
+
+    def _return_bad_specs(self, params):
+        bad_specs = self._get_default_bad_specs(params)
         
         globalsy.counterrrr += 1
         if self.mode == "mass_collection":
@@ -398,7 +402,7 @@ class Extractor:
             eval_result = sim_env.evaluate(param_val)
             
             if not eval_result or len(eval_result) == 0:
-                return self._return_bad_specs(full_params)
+                eval_result = [(None, {})]
                 
             specs = eval_result[0][1]
             region_MM = specs.get('zregion_of_operation_MM', {})
@@ -414,7 +418,6 @@ class Extractor:
             
             if not ops_good:
                 print(f"   [-] Transistor ops bad. Skipping Tier 2.")
-                return self._return_bad_specs(full_params)
                 
             # Check AC performance
             gain_ol = specs.get('gain_ol')
@@ -423,14 +426,22 @@ class Extractor:
             gain_ol = gain_ol if gain_ol is not None else -1000.0
             pm = pm if pm is not None else -180.0
             
-            if gain_ol < 20.0 or pm < 0.0:
+            if ops_good and (gain_ol < 20.0 or pm < 0.0):
                 print(f"   [-] AC performance bad (Gain: {gain_ol:.2f}dB, PM: {pm:.2f}°). Skipping Tier 2.")
-                return self._return_bad_specs(full_params)
+                ops_good = False
                 
-            # If good, run full char
-            full_params["run_full_char"] = 1
-            param_val = [OrderedDict(full_params)]
-            eval_result = sim_env.evaluate(param_val)
+            if ops_good:
+                # If good, run full char
+                full_params["run_full_char"] = 1
+                param_val = [OrderedDict(full_params)]
+                eval_result = sim_env.evaluate(param_val)
+            else:
+                # Merge Tier 1 specs with default bad specs for Tier 2
+                bad_specs_dict = self._get_default_bad_specs(full_params)
+                for k, v in specs.items():
+                    if v is not None:
+                        bad_specs_dict[k] = v
+                eval_result[0] = (eval_result[0][0], bad_specs_dict)
         else:
             # RUN FULL CHARACTERIZATION (Tier 2 enabled)
             full_params["run_full_char"] = 1
@@ -443,7 +454,8 @@ class Extractor:
         # Error handling: check if evaluation returned valid results
         if not eval_result or len(eval_result) == 0:
             print(f"ERROR: Simulation returned empty list")
-            return self._return_bad_specs(full_params)
+            bad_specs_dict = self._get_default_bad_specs(full_params)
+            eval_result = [(None, bad_specs_dict)]
         
         cur_specs = OrderedDict(sorted(eval_result[0][1].items(), key=lambda k:k[0]))
         

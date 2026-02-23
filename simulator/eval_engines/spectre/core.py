@@ -191,7 +191,7 @@ class SpectreWrapper(object):
             Error code. 0 indicates successful simulation, 1 indicates error.
         """
         # construct Spectre command
-        command = ['spectre', '%s'%fpath, '-format', 'psfbin' ,'> /dev/null 2>&1']
+        command = ['nice', '-n', '19', 'spectre', '%s'%fpath, '-format', 'psfbin' ,'> /dev/null 2>&1']
         log_file = os.path.join(os.path.dirname(fpath), 'log.txt')
         err_file = os.path.join(os.path.dirname(fpath), 'err_log.txt')
 

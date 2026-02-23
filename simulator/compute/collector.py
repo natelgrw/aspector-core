@@ -30,7 +30,7 @@ class DataCollector:
         
         os.makedirs(output_dir, exist_ok=True)
         
-    def log(self, config, specs, meta=None):
+    def log(self, config, specs, meta=None, operating_points=None):
         """
         Log a single simulation result.
         
@@ -38,6 +38,7 @@ class DataCollector:
             config (dict): Input parameters (Sizing + Env).
             specs (dict): Output specifications.
             meta (dict, optional): Metadata (sim_id, timestamp).
+            operating_points (dict, optional): Operating points data.
         """
         record = {}
         
@@ -61,6 +62,12 @@ class DataCollector:
         else:
             record['valid'] = False
             
+        # Add Operating Points
+        if operating_points:
+            for comp, params in operating_points.items():
+                for param_name, val in params.items():
+                    record[f"op_{comp}_{param_name}"] = val
+                    
         if meta:
             # Remove 'env' if present to avoid redundancy/errors
             meta_copy = dict(meta)

@@ -14,7 +14,7 @@ import torch
 import numpy as np
 from dataclasses import dataclass
 from botorch.models import SingleTaskGP
-from botorch.fit import fit_gpytorch_mll
+from botorch.fit import fit_gpytorch_model
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch.kernels import MaternKernel, ScaleKernel
 from gpytorch.priors import GammaPrior
@@ -357,7 +357,7 @@ class ASPECTOR_TurboM:
                 gp = SingleTaskGP(train_X, train_Y_std, covar_module=covar)
                 mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
                 try:
-                    fit_gpytorch_mll(mll)
+                    fit_gpytorch_model(mll)
                 except:
                     pass
                 

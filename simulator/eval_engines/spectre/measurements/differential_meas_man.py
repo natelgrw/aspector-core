@@ -122,7 +122,7 @@ class ACTB(object):
         xf_resultsdict = results.get('xf_sim')
         thd_results = results.get('thd_pss.fd') or results.get('thd_pss') or results.get('thd_extract') or results.get('thd_sim')
         slew_results = results.get('slew_large_tran') or results.get('slew_sim')
-        settle_results = results.get('settle_tran') or results.get('settle_sim')
+        settle_results = results.get('settle_small_tran') or results.get('settle_tran') or results.get('settle_sim')
         xf_cm_results = results.get('xf_cm_sim')
         xf_psrr_results = results.get('xf_psrr') 
 

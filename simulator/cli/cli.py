@@ -93,7 +93,7 @@ def get_netlist_selection():
     print_section("Netlist Selection")
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-    default_path = os.path.join(project_root, "demo_netlists")
+    default_path = os.path.join(project_root, "topologies")
     
     print(f" Default Directory: {default_path}")
     print(" (Press ENTER to use default, or paste a custom folder path)")
@@ -215,8 +215,7 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
     
 
     # 5. Pipeline Execution Setup (Relative to netlist)
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-    results_dir = os.path.join(project_root, "results", netlist_name_base)
+    results_dir = os.path.join(run_config['output_dir'], netlist_name_base)
 
     # Subdirectories for sobol, turbo_m
     sobol_dir = os.path.join(results_dir, "sobol")
@@ -332,7 +331,8 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                                 'sim_id': full_res['id'],
                                 'algorithm': 'sobol',
                                 'netlist_name': netlist_name_base
-                            }
+                            },
+                            operating_points=full_res.get('operating_points')
                         )
                 
                 # Periodically save Sobol state to survive hard crashes
@@ -462,7 +462,8 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                                         'algorithm': 'turbo_m',
                                         'persona': p_name,
                                         'netlist_name': netlist_name_base
-                                    }
+                                    },
+                                    operating_points=full_res.get('operating_points')
                                 )
                     
                     # Filter valid results only for TuRBO update
@@ -544,11 +545,30 @@ def main():
     print_section("Parallel Compute Configuration")
     print(f" {Style.INFO} System has {max_cores} CPU cores available.")
     
+    try:
+        # Get 1-minute load average to estimate currently busy cores
+        load1, load5, load15 = os.getloadavg()
+        print(f" {Style.INFO} Current 1-min CPU load average: {load1:.2f}")
+        
+        # Calculate free cores, leaving 2 as a safety buffer for the OS
+        free_cores = max(1, int(max_cores - load1))
+        recommended_workers = max(1, free_cores - 2)
+        
+        # Cap at 12 to avoid hogging too many Cadence licenses by default
+        if recommended_workers > 12:
+            print(f" {Style.INFO} Capping recommendation at 12 to preserve Cadence licenses.")
+            recommended_workers = 12
+            
+    except AttributeError:
+        recommended_workers = max(1, max_cores - 2)
+        
+    print(f" {Style.INFO} Recommended safe workers (based on current load): {recommended_workers}")
+    
     n_workers = get_valid_int(
         "Number of Parallel Workers (Simulations to run at once)",
         min_val=1,
         max_val=max_cores,
-        default=max(1, max_cores - 2)
+        default=recommended_workers
     )
 
     # 3. Algorithm Selection
@@ -655,6 +675,19 @@ def main():
     sim_mode_sel = get_valid_int("Enter selection", 1, 2, 1)
     sim_mode = "complete" if sim_mode_sel == 1 else "efficient"
     run_config['sim_mode'] = sim_mode
+    
+    # 6. Output Directory
+    print_section("Output Directory")
+    while True:
+        out_dir = input(f" {Style.ARROW} Enter relative path from aspector_core to save results (e.g., results_mtlcad): ").strip()
+        if out_dir:
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+            out_dir = os.path.join(project_root, out_dir)
+            print_success(f"Results will be saved to: {out_dir}")
+            run_config['output_dir'] = out_dir
+            break
+        else:
+            print_error("You must specify an output directory.")
     
     print()
     print(Style.DOUBLE_LINE)

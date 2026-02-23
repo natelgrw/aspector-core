@@ -14,7 +14,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export PYTHONPATH="${PYTHONPATH}:${SCRIPT_DIR}"
-export BASE_TMP_DIR="${SCRIPT_DIR}/results"
+export BASE_TMP_DIR="${SCRIPT_DIR}/results_mtlcad"
 	source ~/.bashrc
 	
     # Setup Cadence Environment
