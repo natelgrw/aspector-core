@@ -5,23 +5,13 @@ Author: natelgrw
 Last Edited: 02/05/2026
 
 Sobol sequence generator for circuit sizing parameters.
-Generates valid design points respecting globalsy constraints and technology rules.
+Generates valid design points from local technology/config constants.
 """
 
 import math
-import os
-import re
-import sys
 
 import numpy as np
 from scipy.stats import qmc
-
-# add project root to path so globalsy can be imported
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
-from simulator import globalsy
 
 
 # ===== Constants ===== #
@@ -33,14 +23,39 @@ TECH_CONSTANTS = {
     14: {'lmin': 1e-8, 'lmax': 3e-8, 'vdd_nom': 0.80},
     16: {'lmin': 1e-8, 'lmax': 3e-8, 'vdd_nom': 0.80},
     20: {'lmin': 1e-8, 'lmax': 2.4e-8, 'vdd_nom': 0.90},
+    'is_hp': [0, 1],
+    'process_corner': [(1, 1), (0, 0), (-1, -1), (1, -1), (-1, 1)],
+    'shared': {
+        'e_series': {
+            'E12': [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2],
+            'E24': [
+                1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0,
+                3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1,
+            ],
+        },
+        'circuit_params': {
+            'Nfin': {'lb': 4, 'ub': 128},
+            'vbiasn0': {'lb': 0.45, 'ub': 0.70},
+            'vbiasn1': {'lb': 0.45, 'ub': 0.70},
+            'vbiasn2': {'lb': 0.65, 'ub': 0.85},
+            'vbiasp0': {'lb': 0.40, 'ub': 0.85},
+            'vbiasp1': {'lb': 0.40, 'ub': 0.85},
+            'vbiasp2': {'lb': 0.15, 'ub': 0.50},
+            'nC': {'lb': 100e-15, 'ub': 5e-12, 'series': 'E12'},
+            'nR': {'lb': 500, 'ub': 500e3, 'series': 'E24'},
+            'vcm': {
+                'nmos': (0.65, 0.85),
+                'pmos': (0.15, 0.35),
+                'default': (0.10, 0.90),
+            },
+        },
+        'testbench_params': {
+            'Fet_num': [7, 10, 14, 16, 20],
+            'Tempc': {'lb': -40, 'ub': 125},
+            'Cload_val': {'lb': 10e-15, 'ub': 5e-12},
+        },
+    },
 }
-
-# standard e-series base values for component selection
-E12 = [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2]
-E24 = [
-    1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0,
-    3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1,
-]
 
 
 # ===== Sampling Functions ===== #
@@ -60,7 +75,8 @@ def e_series_grid(lb, ub, series='E24'):
     --------
     np.array: Sorted array of E-series values within the specified range.
     """
-    bases = E24 if series == 'E24' else E12
+    e_series = TECH_CONSTANTS['shared']['e_series']
+    bases = e_series.get(series, e_series['E12'])
     if lb <= 0:
         lb = 1e-15
     min_exp = int(math.floor(math.log10(lb)))
@@ -126,7 +142,7 @@ def pick_from_grid_by_u(grid, u):
         u_f = 0.0
     if u_f > 1.0:
         u_f = 1.0
-    idx = int(u_f * max(1, (len(grid) - 1)))
+    idx = int(u_f * len(grid))
     if idx >= len(grid):
         idx = len(grid) - 1
     return float(grid[idx]), idx
@@ -151,13 +167,12 @@ def nearest_grid_u(grid, val):
     idx = int(np.argmin(np.abs(grid - float(val))))
     if len(grid) <= 1:
         return 0.0
-    return float(idx) / max(1, (len(grid) - 1))
+    return (float(idx) + 0.5) / len(grid)
 
 
 def _read_model_l_bounds(fet_num):
     """
-    Reads lmin/lmax from local model card files under the `lstp/` folder.
-    If parsing fails, falls back to TECH_CONSTANTS or hardcoded defaults.
+    Reads lmin/lmax directly from TECH_CONSTANTS with safe defaults.
 
     Parameters:
     -----------
@@ -167,40 +182,42 @@ def _read_model_l_bounds(fet_num):
     --------
     tuple: (lmin, lmax) in meters.
     """
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-    lstp_dir = os.path.join(project_root, 'lstp')
-    candidates = [f"{fet_num}nfet.pm", f"{fet_num}pfet.pm", f"{fet_num}fpm.pm"]
-    lmin = None
-    lmax = None
-    for fn in candidates:
-        path = os.path.join(lstp_dir, fn)
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path, 'r') as f:
-                text = f.read()
-            m_min = re.search(r"lmin\s*=\s*([0-9\.eE+\-]+)", text)
-            m_max = re.search(r"lmax\s*=\s*([0-9\.eE+\-]+)", text)
-            if m_min:
-                lmin = float(m_min.group(1))
-            if m_max:
-                lmax = float(m_max.group(1))
-            if lmin is not None and lmax is not None:
-                return lmin, lmax
-        except Exception:
-            continue
-
-    # fall back to hard-coded constants if parsing fails
     t = TECH_CONSTANTS.get(fet_num, None)
     if t is not None:
-        lmin = t.get('lmin', None)
-        lmax = t.get('lmax', None)
-    if lmin is None:
+        lmin = t.get('lmin', 10e-9)
+        lmax = t.get('lmax', max(3 * lmin, lmin + 2e-9))
+    else:
         lmin = 10e-9
-    if lmax is None:
-        # conservative fallback: 3x lmin
         lmax = max(3 * lmin, lmin + 2e-9)
     return lmin, lmax
+
+
+def _vcm_bounds_for_topology(topology_name, vdd_nominal):
+    """
+    Return topology-aware absolute VCM bounds in volts.
+
+    Parameters:
+    -----------
+    topology_name (str): Name of the circuit topology (e.g., "nmos_inverter", "pmos_inverter").
+    vdd_nominal (float): Nominal supply voltage in volts.
+
+    Returns:
+    --------
+    tuple: (lb, ub) absolute VCM bounds in volts.   
+    """
+    fracs = TECH_CONSTANTS['shared']['circuit_params']['vcm']
+    try:
+        name = (topology_name or '').lower()
+    except Exception:
+        name = ''
+
+    if 'nmos' in name:
+        lb_frac, ub_frac = fracs['nmos']
+    elif 'pmos' in name:
+        lb_frac, ub_frac = fracs['pmos']
+    else:
+        lb_frac, ub_frac = fracs['default']
+    return lb_frac * vdd_nominal, ub_frac * vdd_nominal
 
 
 # ===== Sobol Generator Class ===== #
@@ -220,12 +237,17 @@ class SobolSizingGenerator:
         """
         self.sizing_params = sizing_params_list
         self.seed = seed
-        self.tech_nodes = globalsy.testbench_params['Fet_num']
+        self.shared_cfg = TECH_CONSTANTS['shared']
+        self.circuit_params = self.shared_cfg['circuit_params']
+        self.testbench_params = self.shared_cfg['testbench_params']
+        self.is_hp_choices = TECH_CONSTANTS['is_hp']
+        self.process_corner_choices = TECH_CONSTANTS['process_corner']
+        self.tech_nodes = self.testbench_params['Fet_num']
         self.topology = topology
 
         # fixed testbench parameters
         self.fixed_params = [
-            'fet_num', 'vdd', 'vcm', 'tempc', 'cload_val'
+            'is_hp', 'process_corner', 'fet_num', 'vdd', 'vcm', 'tempc', 'cload_val'
         ]
 
         # total dimensions = fixed params + sizing params
@@ -234,6 +256,27 @@ class SobolSizingGenerator:
 
         # initialize Sobol engine
         self.engine = qmc.Sobol(d=self.dim, scramble=True, seed=seed)
+
+    def _draw_sobol(self, n_samples):
+        """
+        Draw Sobol points robustly across fresh and resumed states.
+
+        Uses random_base2 on power-of-two batch sizes when possible, and
+        falls back to random(n) if SciPy rejects base2 due to engine state.
+        """
+        if n_samples is None or n_samples <= 0:
+            return np.empty((0, self.dim))
+
+        m = math.ceil(math.log2(n_samples)) if n_samples > 0 else 0
+        if m <= 0:
+            return self.engine.random(n=n_samples)
+
+        try:
+            u_full = self.engine.random_base2(m)
+            return u_full[:n_samples]
+        except ValueError:
+            # Resumed/non-power-of-two engine state: fall back to unrestricted draw.
+            return self.engine.random(n=n_samples)
 
     def _log_sample(self, u, lb, ub):
         """
@@ -260,8 +303,8 @@ class SobolSizingGenerator:
 
         Parameters:
         -----------
-        param_key (str): Key under globalsy.testbench_params.
-        series_key (str | None): Key under globalsy.sampling_metadata (or explicit series).
+        param_key (str): Key under local testbench parameter config.
+        series_key (str | None): Key under local sampling metadata (or explicit series).
         u_val (float): Normalized coordinate in [0, 1].
 
         Returns:
@@ -269,19 +312,77 @@ class SobolSizingGenerator:
         float | None: Sampled value, or None if bounds are unavailable.
         """
         try:
-            pinfo = globalsy.testbench_params[param_key]
+            pinfo = self.testbench_params[param_key]
             lb = pinfo['lb']
             ub = pinfo['ub']
         except Exception:
             return None
-        series_name = globalsy.sampling_metadata.get(series_key, None) if isinstance(series_key, str) else series_key
-        if series_name is None:
+        if series_key is None:
             return self._log_sample(u_val, lb, ub)
-        grid = e_series_grid(lb, ub, series=series_name)
+        grid = e_series_grid(lb, ub, series=series_key)
         val, _ = pick_from_grid_by_u(grid, u_val)
         if val is None:
             val = self._log_sample(u_val, lb, ub)
         return val
+
+    def _resolve_bias_bounds(self, param_name, vdd_selected):
+        """
+        Resolve vbias bounds for a parameter using selected/sample VDD.
+
+        Parameters:
+        -----------
+        param_name (str): Bias parameter name (e.g., vbiasn0, vbiasp1).
+        vdd_selected (float): Selected/sample VDD for this design point.
+
+        Returns:
+        --------
+        tuple: (lb, ub) as floats, or (None, None) when unavailable.
+        """
+        if not isinstance(param_name, str):
+            return None, None
+
+        if param_name.startswith('vbiasn'):
+            suffix = param_name[len('vbiasn'):]
+            key = 'vbiasn' + (suffix if suffix else '0')
+        elif param_name.startswith('vbiasp'):
+            suffix = param_name[len('vbiasp'):]
+            key = 'vbiasp' + (suffix if suffix else '0')
+        else:
+            return None, None
+
+        binfo = self.circuit_params.get(key, None)
+        if not isinstance(binfo, dict):
+            return None, None
+
+        def _to_fraction(expr):
+            try:
+                if isinstance(expr, str):
+                    return float(
+                        eval(
+                            expr,
+                            {"__builtins__": None},
+                            {
+                                # Legacy compatibility: interpret expressions as fractions.
+                                "vdd_nominal": 1.0,
+                                "vdd_selected": 1.0,
+                            },
+                        )
+                    )
+                return float(expr)
+            except Exception:
+                return None
+
+        lb_frac = _to_fraction(binfo.get('lb'))
+        ub_frac = _to_fraction(binfo.get('ub'))
+        if lb_frac is None or ub_frac is None:
+            return None, None
+
+        vdd_val = float(vdd_selected)
+        lb = lb_frac * vdd_val
+        ub = ub_frac * vdd_val
+        if ub < lb:
+            ub = lb
+        return lb, ub
 
     def _pick_temp_from_u(self, u_val):
         """
@@ -295,10 +396,28 @@ class SobolSizingGenerator:
         --------
         int: Temperature in degrees C, clamped to configured bounds.
         """
-        temp_lb = int(round(globalsy.testbench_params['Tempc']['lb']))
-        temp_ub = int(round(globalsy.testbench_params['Tempc']['ub']))
+        temp_lb = int(round(self.testbench_params['Tempc']['lb']))
+        temp_ub = int(round(self.testbench_params['Tempc']['ub']))
         t = int(round(temp_lb + float(u_val) * (temp_ub - temp_lb)))
         return max(temp_lb, min(temp_ub, t))
+
+    def sample_context_u(self, n_samples):
+        """
+        Draw Sobol context vectors for environment dimensions only.
+
+        Parameters:
+        -----------
+        n_samples (int): Number of context vectors to draw.
+
+        Returns:
+        --------
+        np.ndarray: Shape (n_samples, len(self.fixed_params)) in [0, 1].
+        """
+        if n_samples is None or n_samples <= 0:
+            return np.empty((0, len(self.fixed_params)))
+
+        u_ctx = self._draw_sobol(n_samples)[:, :len(self.fixed_params)]
+        return u_ctx
 
     def generate(self, n_samples=None, u_samples=None, robust_env=False, start_idx=0):
         """
@@ -308,7 +427,8 @@ class SobolSizingGenerator:
         -----------
         n_samples (int): Number of samples to generate.
         u_samples (np.array): Pre-generated [0,1] samples of shape (n, dim) or (n, dim_sizing).
-        robust_env (bool): If True, environment params are randomized per evaluation. If False, use nominal env.
+        robust_env (bool): Deprecated compatibility flag. Environment values come
+            directly from full-dimension inputs, or are Sobol-sampled when absent.
         start_idx (int): Index to resume Sobol sequence from.
 
         Returns:
@@ -323,13 +443,13 @@ class SobolSizingGenerator:
             if input_dim == self.dim:
                 u_samples_expanded = u_samples
             elif input_dim == self.dim_sizing:
-                if robust_env:
-                    rng = np.random.default_rng()
-                    u_env = rng.uniform(0, 1, size=(n_samples, len(self.fixed_params)))
-                    u_samples_expanded = np.hstack([u_samples, u_env])
+                # Backward-compatible expansion path for legacy sizing-only callers.
+                # Contextual TuRBO now uses full-dimension inputs and bypasses this.
+                if n_samples > 0:
+                    u_env = self._draw_sobol(n_samples)[:, :len(self.fixed_params)]
                 else:
-                    u_env = np.full((n_samples, len(self.fixed_params)), 0.5)
-                    u_samples_expanded = np.hstack([u_samples, u_env])
+                    u_env = np.empty((0, len(self.fixed_params)))
+                u_samples_expanded = np.hstack([u_samples, u_env])
             else:
                 raise ValueError(
                     f"Provided samples dim {input_dim} matches neither full ({self.dim}) nor sizing ({self.dim_sizing})"
@@ -339,36 +459,50 @@ class SobolSizingGenerator:
                 raise ValueError("Must provide n_samples if u_samples is None")
             if start_idx > 0:
                 self.engine.fast_forward(start_idx)
-                u_samples_expanded = self.engine.random(n=n_samples)
+                u_samples_expanded = self._draw_sobol(n_samples)
             else:
-                # prefer 2^m Sobol blocks for balance, then truncate
-                m = math.ceil(math.log2(n_samples)) if n_samples > 0 else 0
-                if m <= 0:
-                    u_samples_expanded = self.engine.random(n=n_samples)
-                else:
-                    u_full = self.engine.random_base2(m)
-                    u_samples_expanded = u_full[:n_samples]
+                u_samples_expanded = self._draw_sobol(n_samples)
         
         configs = []
         n_env_dims = len(self.fixed_params)
         
+        # --- Environment parameter sampling ---
         for i in range(n_samples):
             row = u_samples_expanded[i]
             config = {}
-            
-            # environment parameters
             env_col_idx = 0
+
+            # is_hp
+            u_is_hp = row[env_col_idx]
+            env_col_idx += 1
+            is_hp_idx = int(u_is_hp * len(self.is_hp_choices))
+            if is_hp_idx >= len(self.is_hp_choices):
+                is_hp_idx = len(self.is_hp_choices) - 1
+            is_hp = self.is_hp_choices[is_hp_idx]
+            config['is_hp'] = is_hp
+
+            # n_state, p_state
+            u_state = row[env_col_idx]
+            env_col_idx += 1
+            state_idx = int(u_state * len(self.process_corner_choices))
+            if state_idx >= len(self.process_corner_choices):
+                state_idx = len(self.process_corner_choices) - 1
+            n_state, p_state = self.process_corner_choices[state_idx]
+            config['n_state'] = n_state
+            config['p_state'] = p_state
+
+            # fet_num (tech node)
             u_fet = row[env_col_idx]
             env_col_idx += 1
             fet_idx = int(u_fet * len(self.tech_nodes))
             fet_idx = min(fet_idx, len(self.tech_nodes) - 1)
             fet_num = self.tech_nodes[fet_idx]
             config['fet_num'] = fet_num
-            
+
             # node-dependent constants
             t_const = TECH_CONSTANTS[fet_num]
             vdd_nom = t_const['vdd_nom']
-            
+
             # VDD
             u_vdd = row[env_col_idx]
             env_col_idx += 1
@@ -386,53 +520,13 @@ class SobolSizingGenerator:
             vdd_grid = discrete_linear_grid(vdd_lb, vdd_ub, step_vdd)
             vdd, _ = pick_from_grid_by_u(vdd_grid, u_vdd)
             config['vdd'] = vdd
-            
+
             # VCM
             u_vcm = row[env_col_idx]
             env_col_idx += 1
 
-            def eval_bound_expr(expr, vdd_nominal):
-                """
-                Evaluate a bound that may be numeric or an expression string.
-
-                Parameters:
-                -----------
-                expr (float | str): Bound value or expression.
-                vdd_nominal (float): Nominal VDD used by expressions.
-
-                Returns:
-                --------
-                float | None: Parsed numeric value, or None on failure.
-                """
-                try:
-                    if isinstance(expr, str):
-                        return float(eval(expr, {"__builtins__": None}, {"vdd_nominal": vdd_nominal}))
-                    return float(expr)
-                except Exception:
-                    return None
-
-            vcm_lb = None
-            vcm_ub = None
-            try:
-                tb_vcm = globalsy.testbench_params.get('VCM', None)
-                if tb_vcm and isinstance(tb_vcm, dict):
-                    vcm_lb = eval_bound_expr(tb_vcm.get('lb'), vdd_nom)
-                    vcm_ub = eval_bound_expr(tb_vcm.get('ub'), vdd_nom)
-            except Exception:
-                vcm_lb = None
-                vcm_ub = None
-
-            # fallback to topology-aware defaults if explicit bounds are unavailable
-            if vcm_lb is None or vcm_ub is None:
-                try:
-                    vcm_lb_auto, vcm_ub_auto = globalsy.vcm_bounds_for_topology(self.topology, vdd_nom)
-                    vcm_lb = vcm_lb if vcm_lb is not None else vcm_lb_auto
-                    vcm_ub = vcm_ub if vcm_ub is not None else vcm_ub_auto
-                except Exception:
-                    if vcm_lb is None:
-                        vcm_lb = 0.45 * vdd_nom
-                    if vcm_ub is None:
-                        vcm_ub = 0.55 * vdd_nom
+            # Topology-based VCM bounds only.
+            vcm_lb, vcm_ub = _vcm_bounds_for_topology(self.topology, vdd)
             if vcm_ub < vcm_lb:
                 vcm_ub = vcm_lb
             abs_step = 0.01
@@ -468,9 +562,9 @@ class SobolSizingGenerator:
                 if param.startswith('nA'):
                     model_lmin, model_lmax = _read_model_l_bounds(fet_num)
                     if model_lmax <= model_lmin:
-                        model_lmax = model_lmin + 2e-9
+                        model_lmax = model_lmin + 1e-9
 
-                    step = 2e-9
+                    step = 1e-9
                     grid = np.arange(model_lmin, model_lmax + 1e-15, step)
                     if grid.size == 0:
                         grid = np.array([model_lmin])
@@ -483,16 +577,9 @@ class SobolSizingGenerator:
                     config[param] = val
                     
                 elif param.startswith('nB'):
-                    # prefer globalsy.basic_params if available
-                    bp_nfin = globalsy.basic_params.get('Nfin', None)
-                    if bp_nfin is not None:
-                        try:
-                            p_lb = int(bp_nfin.get('lb'))
-                            p_ub = int(bp_nfin.get('ub'))
-                        except Exception:
-                            p_lb, p_ub = 4, 128
-                    else:
-                        p_lb, p_ub = 4, 128
+                    bp_nfin = self.circuit_params.get('Nfin', None)
+                    p_lb = int(bp_nfin['lb'])
+                    p_ub = int(bp_nfin['ub'])
                     # map u_p in [0,1] to integer range [p_lb, p_ub]
                     span = max(0, p_ub - p_lb)
                     val = int(round(p_lb + u_p * span))
@@ -505,57 +592,12 @@ class SobolSizingGenerator:
                 elif "bias" in param:
                     vdd = config['vdd']
 
-                    def eval_bound(expr):
-                        """
-                        Evaluate a bound expression safely using the nominal VDD.
-
-                        Parameters:
-                        -----------
-                        expr (float | str): Bound value or expression.
-
-                        Returns:
-                        --------
-                        float | None: Parsed numeric value, or None on failure.
-                        """
-                        try:
-                            if isinstance(expr, str):
-                                return float(eval(expr, {"__builtins__": None}, {"vdd_nominal": vdd_nom}))
-                            else:
-                                return float(expr)
-                        except Exception:
-                            return None
-
                     # NMOS vbiasn
                     if param.startswith('vbiasn'):
-                        suffix = param[len('vbiasn'):]
-                        key = 'vbiasn' + (suffix if suffix else '0')
-                        binfo = globalsy.basic_params.get(key, None)
-                        if binfo:
-                            p_lb = eval_bound(binfo.get('lb'))
-                            p_ub = eval_bound(binfo.get('ub'))
-                        else:
-                            tail_lb_frac, tail_ub_frac = (0.35, 0.50)
-                            cas_lb_frac, cas_ub_frac = (0.55, 0.75)
-                            if suffix in ('0', '1', ''):
-                                p_lb = tail_lb_frac * vdd
-                                p_ub = tail_ub_frac * vdd
-                            elif suffix == '2':
-                                p_lb = cas_lb_frac * vdd
-                                p_ub = cas_ub_frac * vdd
-                            else:
-                                p_lb = 0.1 * vdd
-                                p_ub = 0.9 * vdd
+                        p_lb, p_ub = self._resolve_bias_bounds(param, vdd)
                         if p_lb is None or p_ub is None:
-                            p_lb = 0.1 * vdd
-                            p_ub = 0.9 * vdd
+                            p_lb, p_ub = 0.0, float(vdd)
                         step_bias = 0.01
-                        try:
-                            p_lb = round(float(p_lb) / step_bias) * step_bias
-                            p_ub = round(float(p_ub) / step_bias) * step_bias
-                            if p_ub < p_lb:
-                                p_ub = p_lb
-                        except Exception:
-                            pass
                         bias_grid = discrete_linear_grid(p_lb, p_ub, step_bias)
                         val, _ = pick_from_grid_by_u(bias_grid, u_p)
                         if val is None:
@@ -575,35 +617,10 @@ class SobolSizingGenerator:
 
                     # PMOS vbiasp
                     elif param.startswith('vbiasp'):
-                        suffix = param[len('vbiasp'):]
-                        key = 'vbiasp' + (suffix if suffix else '0')
-                        binfo = globalsy.basic_params.get(key, None)
-                        if binfo:
-                            p_lb = eval_bound(binfo.get('lb'))
-                            p_ub = eval_bound(binfo.get('ub'))
-                        else:
-                            tail_lb_frac, tail_ub_frac = (0.55, 0.75)
-                            cas_lb_frac, cas_ub_frac = (0.30, 0.45)
-                            if suffix in ('0', '2', ''):
-                                p_lb = tail_lb_frac * vdd
-                                p_ub = tail_ub_frac * vdd
-                            elif suffix == '1':
-                                p_lb = cas_lb_frac * vdd
-                                p_ub = cas_ub_frac * vdd
-                            else:
-                                p_lb = 0.1 * vdd
-                                p_ub = 0.9 * vdd
+                        p_lb, p_ub = self._resolve_bias_bounds(param, vdd)
                         if p_lb is None or p_ub is None:
-                            p_lb = 0.1 * vdd
-                            p_ub = 0.9 * vdd
+                            p_lb, p_ub = 0.0, float(vdd)
                         step_bias = 0.01
-                        try:
-                            p_lb = round(float(p_lb) / step_bias) * step_bias
-                            p_ub = round(float(p_ub) / step_bias) * step_bias
-                            if p_ub < p_lb:
-                                p_ub = p_lb
-                        except Exception:
-                            pass
                         bias_grid = discrete_linear_grid(p_lb, p_ub, step_bias)
                         val, _ = pick_from_grid_by_u(bias_grid, u_p)
                         if val is None:
@@ -624,13 +641,6 @@ class SobolSizingGenerator:
                         p_lb = 0.1 * config['vdd']
                         p_ub = 0.9 * config['vdd']
                         step_bias = 0.01
-                        try:
-                            p_lb = round(float(p_lb) / step_bias) * step_bias
-                            p_ub = round(float(p_ub) / step_bias) * step_bias
-                            if p_ub < p_lb:
-                                p_ub = p_lb
-                        except Exception:
-                            pass
                         bias_grid = discrete_linear_grid(p_lb, p_ub, step_bias)
                         val, _ = pick_from_grid_by_u(bias_grid, u_p)
                         if val is None:
@@ -638,20 +648,23 @@ class SobolSizingGenerator:
                         config[param] = val
 
                 elif param.startswith('nC'):
-                    # discrete capacitor values (E12 series)
-                    p_lb = 100e-15
-                    p_ub = 5e-12
-                    c_grid = e_series_grid(p_lb, p_ub, series='E12')
+                    # discrete capacitor values from circuit_params
+                    c_info = self.circuit_params.get('nC', {})
+                    p_lb = c_info.get('lb', 100e-15)
+                    p_ub = c_info.get('ub', 5e-12)
+                    c_series = c_info.get('series', 'E12')
+                    c_grid = e_series_grid(p_lb, p_ub, series=c_series)
                     c_val, _ = pick_from_grid_by_u(c_grid, u_p)
                     if c_val is None:
                         c_val = self._log_sample(u_p, p_lb, p_ub)
                     config[param] = c_val
 
                 elif param.startswith('nR'):
-                    # discrete resistor values (E24 series)
-                    p_lb = 500
-                    p_ub = 500e3
-                    r_series = globalsy.sampling_metadata.get('R_series', 'E24')
+                    # discrete resistor values from circuit_params
+                    r_info = self.circuit_params.get('nR', {})
+                    p_lb = r_info.get('lb', 500)
+                    p_ub = r_info.get('ub', 500e3)
+                    r_series = r_info.get('series', 'E24')
                     r_grid = e_series_grid(p_lb, p_ub, series=r_series)
                     r_val, _ = pick_from_grid_by_u(r_grid, u_p)
                     if r_val is None:
@@ -668,8 +681,7 @@ class SobolSizingGenerator:
 
     def inverse_map(self, df):
         """
-        Maps physical parameters (from dataframe) back to Unit Hypercube [0,1]^d.
-        Includes both environment and sizing parameters as context inputs.
+        Maps physical environment + sizing parameters back to Unit Hypercube [0,1]^d.
         Used for initializing TuRBO with existing data ("Sight" mode).
         
         Parameters:
@@ -679,8 +691,8 @@ class SobolSizingGenerator:
         Returns:
         --------
         tuple: (X_tensor, valid_idx)
-               X_tensor is shape [N, dim] with normalized values in [0,1].
-               valid_idx are row indices from the input dataframe that were kept.
+            X_tensor is shape [N, dim] with normalized values in [0,1].
+            valid_idx are row indices from the input dataframe that were kept.
         """
         import torch
         
@@ -688,7 +700,6 @@ class SobolSizingGenerator:
         t_const = TECH_CONSTANTS[fet_num]
         current_vdd = t_const['vdd_nom']
         
-        # combine env and sizing params for full inverse mapping
         full_param_list = self.fixed_params + self.sizing_params
         X_rows = []
         valid_idx = []
@@ -698,26 +709,51 @@ class SobolSizingGenerator:
             
             try:
                 for param in full_param_list:
+                    # Handle process corner before generic column lookup.
+                    # Input rows carry n_state/p_state fields, not process_corner.
+                    if param == 'process_corner':
+                        n_val = row.get('in_n_state', row.get('n_state', None))
+                        p_val = row.get('in_p_state', row.get('p_state', None))
+
+                        if n_val is not None and p_val is not None:
+                            state_tuple = (int(n_val), int(p_val))
+                            try:
+                                state_idx = self.process_corner_choices.index(state_tuple)
+                                u = (float(state_idx) + 0.5) / len(self.process_corner_choices)
+                            except ValueError:
+                                u = 0.5
+                        else:
+                            u = 0.5
+
+                        u_row.append(max(0.0, min(1.0, float(u))))
+                        continue
+
                     col_name = f"in_{param}"
                     if col_name not in row:
                         col_name = param
                     
                     if col_name not in row:
-                        if param in self.fixed_params:
-                            u = 0.5
-                        else:
-                            continue
+                        continue
                     else:
                         val = row[col_name]
                         u = 0.5
                         
                         if param == 'fet_num':
                             try:
-                                node_idx = self.tech_nodes.index(int(val))
-                                u = float(node_idx) / max(1, len(self.tech_nodes) - 1)
+                                fet_num = int(val)
+                                node_idx = self.tech_nodes.index(fet_num)
+                                current_vdd = TECH_CONSTANTS[fet_num]['vdd_nom']
+                                u = (float(node_idx) + 0.5) / len(self.tech_nodes)
                             except Exception:
                                 u = 0.5
-                        
+
+                        elif param == 'is_hp':
+                            try:
+                                is_hp_idx = self.is_hp_choices.index(int(val))
+                                u = (float(is_hp_idx) + 0.5) / len(self.is_hp_choices)
+                            except (ValueError, AttributeError):
+                                u = 0.5
+                            
                         elif param == 'vdd':
                             vdd_nom = current_vdd
                             vdd_lb = 0.9 * vdd_nom
@@ -730,8 +766,11 @@ class SobolSizingGenerator:
                             u = nearest_grid_u(vdd_grid, val)
                         
                         elif param == 'vcm':
-                            vcm_lb = 0.45 * current_vdd
-                            vcm_ub = 0.55 * current_vdd
+                            try:
+                                vdd_for_vcm = float(row.get('in_vdd', row.get('vdd', current_vdd)))
+                            except Exception:
+                                vdd_for_vcm = current_vdd
+                            vcm_lb, vcm_ub = _vcm_bounds_for_topology(self.topology, vdd_for_vcm)
                             vcm_grid = discrete_linear_grid(
                                 round(vcm_lb / 0.01) * 0.01,
                                 round(vcm_ub / 0.01) * 0.01,
@@ -740,15 +779,17 @@ class SobolSizingGenerator:
                             u = nearest_grid_u(vcm_grid, val)
                         
                         elif param == 'tempc':
-                            temp_lb = int(round(globalsy.testbench_params['Tempc']['lb']))
-                            temp_ub = int(round(globalsy.testbench_params['Tempc']['ub']))
+                            temp_lb = int(round(self.testbench_params['Tempc']['lb']))
+                            temp_ub = int(round(self.testbench_params['Tempc']['ub']))
                             temp_span = max(1, temp_ub - temp_lb)
                             u = (int(val) - temp_lb) / temp_span
                         
                         elif param == 'cload_val':
-                            cl_lb = globalsy.testbench_params['Cload_val']['lb']
-                            cl_ub = globalsy.testbench_params['Cload_val']['ub']
-                            cl_series = globalsy.sampling_metadata.get('C_series', 'E12')
+                            cl_lb = self.testbench_params['Cload_val']['lb']
+                            cl_ub = self.testbench_params['Cload_val']['ub']
+                            # Use C_series from circuit_params if available, else fallback to E12
+                            c_info = self.circuit_params.get('nC', {})
+                            cl_series = c_info.get('series', 'E12')
                             cl_grid = e_series_grid(cl_lb, cl_ub, series=cl_series)
                             if len(cl_grid) > 0:
                                 u = nearest_grid_u(cl_grid, val)
@@ -758,8 +799,8 @@ class SobolSizingGenerator:
                         elif param.startswith('nA'):
                             model_lmin, model_lmax = _read_model_l_bounds(fet_num)
                             if model_lmax <= model_lmin:
-                                model_lmax = model_lmin + 2e-9
-                            grid = np.arange(model_lmin, model_lmax + 1e-15, 2e-9)
+                                model_lmax = model_lmin + 1e-9
+                            grid = np.arange(model_lmin, model_lmax + 1e-15, 1e-9)
                             if grid.size == 0:
                                 u = 0.5
                             else:
@@ -767,41 +808,45 @@ class SobolSizingGenerator:
                                 u = float(idx_nearest) / max(1, (grid.size - 1))
                         
                         elif param.startswith('nB'):
-                            p_lb = 1
-                            p_ub = 256
+                            bp_nfin = self.circuit_params['Nfin']
+                            p_lb = int(bp_nfin['lb'])
+                            p_ub = int(bp_nfin['ub'])
                             u = (val - p_lb) / (p_ub - p_lb)
                         
                         elif "bias" in param:
-                            if param.startswith('vbiasn'):
-                                p_lb = 0.35 * current_vdd
-                                p_ub = 0.50 * current_vdd
-                            elif param.startswith('vbiasp'):
-                                p_lb = 0.30 * current_vdd
-                                p_ub = 0.75 * current_vdd
-                            else:
-                                p_lb = 0.1 * current_vdd
-                                p_ub = 0.9 * current_vdd
-                            
                             try:
-                                p_lb = round(float(p_lb) / 0.01) * 0.01
-                                p_ub = round(float(p_ub) / 0.01) * 0.01
-                                if p_ub < p_lb:
-                                    p_ub = p_lb
+                                vdd_for_bias = float(row.get('in_vdd', row.get('vdd', current_vdd)))
                             except Exception:
-                                pass
+                                vdd_for_bias = current_vdd
+
+                            if param.startswith('vbiasn'):
+                                p_lb, p_ub = self._resolve_bias_bounds(param, vdd_for_bias)
+                                if p_lb is None or p_ub is None:
+                                    p_lb, p_ub = 0.0, float(vdd_for_bias)
+                            elif param.startswith('vbiasp'):
+                                p_lb, p_ub = self._resolve_bias_bounds(param, vdd_for_bias)
+                                if p_lb is None or p_ub is None:
+                                    p_lb, p_ub = 0.0, float(vdd_for_bias)
+                            else:
+                                p_lb = 0.0
+                                p_ub = float(vdd_for_bias)
+
                             bias_grid = discrete_linear_grid(p_lb, p_ub, 0.01)
                             u = nearest_grid_u(bias_grid, val)
                         
                         elif param.startswith('nC'):
-                            p_lb = 100e-15
-                            p_ub = 5e-12
-                            c_grid = e_series_grid(p_lb, p_ub, series='E12')
+                            c_info = self.circuit_params.get('nC', {})
+                            p_lb = c_info.get('lb', 100e-15)
+                            p_ub = c_info.get('ub', 5e-12)
+                            c_series = c_info.get('series', 'E12')
+                            c_grid = e_series_grid(p_lb, p_ub, series=c_series)
                             u = nearest_grid_u(c_grid, val)
-                        
+
                         elif param.startswith('nR'):
-                            p_lb = 500
-                            p_ub = 500e3
-                            r_series = globalsy.sampling_metadata.get('R_series', 'E24')
+                            r_info = self.circuit_params.get('nR', {})
+                            p_lb = r_info.get('lb', 500)
+                            p_ub = r_info.get('ub', 500e3)
+                            r_series = r_info.get('series', 'E24')
                             r_grid = e_series_grid(p_lb, p_ub, series=r_series)
                             u = nearest_grid_u(r_grid, val)
                         

@@ -52,8 +52,14 @@ V1 (cm gnd!) vsource dc=vcm type=dc
 Vsig (sig_node 0) vsource type=sine dc=dc_offset mag=1 \
     ampl=0 freq=1M val0=0 val1=0 delay=5n rise=50p fall=50p width=2u period=200n
 
-E_pos (Vinp_pre cm sig_node 0) vcvs gain=0.5
-E_neg (Vinn_pre cm sig_node 0) vcvs gain=-0.5
+E_servo_diff (v_err 0 Voutn Voutp) vcvs gain=1e6
+R_servo_int (v_err v_int) resistor r=1G isnoisy=no
+C_servo_int (v_int 0) capacitor c=1F
+E_servo_p (v_corr_p cm v_int 0) vcvs gain=0.5
+E_servo_n (v_corr_n cm v_int 0) vcvs gain=-0.5
+
+E_pos (Vinp_pre v_corr_p sig_node 0) vcvs gain=0.5
+E_neg (Vinn_pre v_corr_n sig_node 0) vcvs gain=-0.5
 
 R_src_p (Vinp_pre Vinp) resistor r=1G isnoisy=no
 R_src_n (Vinn_pre Vinn) resistor r=1G isnoisy=no
@@ -64,19 +70,13 @@ I_probe_n (Voutn Vfb_n) iprobe
 R_fb_p (Vfb_p Vinn) resistor r=1m isnoisy=no
 R_fb_n (Vfb_n Vinp) resistor r=1m isnoisy=no
 
-E_servo_diff (v_err 0 Voutn Voutp) vcvs gain=1e6
-R_servo_int (v_err v_int) resistor r=1G isnoisy=no
-C_servo_int (v_int 0) capacitor c=1F
-E_servo_p (v_corr_p cm v_int 0) vcvs gain=0.5
-E_servo_n (v_corr_n cm v_int 0) vcvs gain=-0.5
-
-R_servo_sw_p (v_corr_p Vinp) resistor r=1G isnoisy=no
-R_servo_sw_n (v_corr_n Vinn) resistor r=1G isnoisy=no
-
 R_cm_p (Voutp Vavg) resistor r=1G isnoisy=no
 R_cm_n (Voutn Vavg) resistor r=1G isnoisy=no
-G_cmfb_p (Voutp 0 Vavg cm) vccs gm=0.001
-G_cmfb_n (Voutn 0 Vavg cm) vccs gm=0.001
+E_cm_err (v_cm_err 0 Vavg cm) vcvs gain=1
+R_cm_filt (v_cm_err v_cm_ctrl) resistor r=1G isnoisy=no
+C_cm_filt (v_cm_ctrl 0) capacitor c=1F
+G_cmfb_p (Voutp 0 v_cm_ctrl 0) vccs gm=1
+G_cmfb_n (Voutn 0 v_cm_ctrl 0) vccs gm=1
 
 Cload_p (Voutp gnd!) capacitor c=cload_val
 Cload_n (Voutn gnd!) capacitor c=cload_val
@@ -94,23 +94,23 @@ stb_sim stb probe=[I_probe_p I_probe_n] start=1 stop=100G dec=10
 
 *--- SIMULATION TIER 2 ---*
 {% if run_full_char %}
-set_fb_off_p alter dev=R_fb_p param=r value=1G
-set_fb_off_n alter dev=R_fb_n param=r value=1G
-set_intrinsic_on_p alter dev=R_src_p param=r value=1m
-set_intrinsic_on_n alter dev=R_src_n param=r value=1m
-set_servo_on_p alter dev=R_servo_sw_p param=r value=1m
-set_servo_on_n alter dev=R_servo_sw_n param=r value=1m
+set_bias_path_p alter dev=R_src_p param=r value=1m
+set_bias_path_n alter dev=R_src_n param=r value=1m
+set_bias_open_p alter dev=R_fb_p param=r value=1G
+set_bias_open_n alter dev=R_fb_n param=r value=1G
 
 xf_sim (Voutp Voutn) xf start=1 stop=100G dec=10
 noise_sim (Voutp Voutn) noise start=1 stop=100G dec=10 iprobe=Vsig
 
-set_servo_off_p alter dev=R_servo_sw_p param=r value=1G
-set_servo_off_n alter dev=R_servo_sw_n param=r value=1G
+set_servo_off_p alter dev=E_servo_p param=gain value=0
+set_servo_off_n alter dev=E_servo_n param=gain value=0
 
 swing_sweep dc param=dc_offset start=(-0.1 * vdd) stop=(0.1 * vdd) step=200u
 
+set_intrinsic_on_p alter dev=R_src_p param=r value=1m
+set_intrinsic_off_n alter dev=R_src_n param=r value=1G
 set_fb_on_p alter dev=R_fb_p param=r value=1m
-set_fb_on_n alter dev=R_fb_n param=r value=1m
+set_fb_off_n alter dev=R_fb_n param=r value=1G
 set_src_sine_type alter dev=Vsig param=type value=sine
 set_src_sine_ampl alter dev=Vsig param=ampl value=(0.1 * vdd)
 set_src_sine_freq alter dev=Vsig param=freq value=1M

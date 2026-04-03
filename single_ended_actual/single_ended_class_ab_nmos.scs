@@ -53,7 +53,7 @@ R_sweep_anchor (cm Vinn) resistor r=1G isnoisy=no
 
 E_servo_amp (v_servo_err 0 Voutp cm) vcvs gain=1e6
 R_servo_int (v_servo_err v_servo_int) resistor r=1G isnoisy=no
-C_servo_int (v_servo_int 0) capacitor c=1F
+C_servo_int (v_servo_int cm) capacitor c=1F
 R_servo_switch (v_servo_int Vinn) resistor r=1G isnoisy=no
 
 Cload_p (Voutp gnd!) capacitor c=cload_val

@@ -4,38 +4,29 @@ cli.py
 Author: natelgrw
 Last Edited: 01/24/2026
 
-Command Line Interface for ASPECTOR Core.
-Provides interactive setup for running circuit optimization pipelines.
-Supports Parallel Execution.
+Command line interface for Aspectryx Core.
+Provides interactive setup for running circuit optimization pipelines, supporting parallel execution.
 """
 
 import os
 import sys
-import argparse
-import numpy as np
-import time
 import multiprocessing as mp
 import pandas as pd
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
 sys.path.append(project_root)
 
-from simulator import globalsy
 from simulator.compute.runner import run_parallel_simulations
 from simulator.compute.collector import DataCollector
 from algorithms.sobol.generator import SobolSizingGenerator
-from algorithms.turbo_m import ASPECTOR_TurboM
+from algorithms.turbo_m import TurboMSizingGenerator
 from simulator.eval_engines.utils.design_reps import extract_sizing_map
 from simulator.eval_engines.spectre.configs.config_env import EnvironmentConfig
 from simulator.eval_engines.extractor.extractor import Extractor, extract_parameter_names, classify_opamp_type
 import torch
-import json
-import subprocess
-import hashlib
-import random
 
 
-# ===== Introductory Text ===== #
+# ===== CLI Styling and Utilities ===== #
 
 
 class Style:
@@ -46,17 +37,15 @@ class Style:
     LINE = "-" * 70
     DOUBLE_LINE = "=" * 70
 
-
 def clear_screen():
     """
     Clears the terminal screen.
     """
     os.system('cls' if os.name == 'nt' else 'clear')
 
-
 def print_header():
     """
-    Prints the stylized header for the CLI.
+    Prints the header for the CLI.
     """
     print()
     print(Style.DOUBLE_LINE)
@@ -64,10 +53,9 @@ def print_header():
     print(Style.DOUBLE_LINE)
     print()
 
-
 def print_section(title):
     """
-    Prints a stylized section header.
+    Prints a section header for the CLI.
 
     Parameters:
     -----------
@@ -77,17 +65,15 @@ def print_section(title):
     print(f" {title.upper()} ".center(70))
     print(f"{Style.LINE}\n")
 
-
 def print_success(message):
     """
-    Prints a success message with a checkmark.
+    Prints a success message.
 
     Parameters:
     -----------
-    message (str): The success message to print.
+    message (str): The message to print.
     """
     print(f" {Style.CHECK} {message}")
-
 
 def print_info(message):
     """
@@ -95,138 +81,166 @@ def print_info(message):
 
     Parameters:
     -----------
-    message (str): The informational message to print.
+    message (str): The message to print.
     """
+
     print(f" {Style.INFO} {message}")
 
-
 def print_error(message):
-    """ 
-    Prints an error message with an X. 
+    """
+    Prints an error message.
 
     Parameters:
     -----------
-    message (str): The error message to print.
+    message (str): The message to print.
     """
     print(f" {Style.X} Error: {message}")
 
 
-MAX_UINT32_SEED = (2 ** 32) - 1
+# ===== Optimization Persona Configurations ===== #
 
 
-def normalize_seed(seed):
+PERSONA_CONFIGS = {
+    1: {
+        "name": "SPEED",
+        "weights": {
+            'ugbw_hz': 40.0,
+            'slew_rate_v_us': 30.0,
+            'settle_time_ns': 20.0,
+            'pm_deg': 10.0,
+            'gain_ol_dc_db': 1.0,
+            'power_w': 1.0,
+            '_pm_deg_target': 62.5,
+            '_pm_deg_range': 2.5,
+        },
+    },
+    2: {
+        "name": "PRECISION",
+        "weights": {
+            'vos_v': 30.0,
+            'gain_ol_dc_db': 25.0,
+            'thd_db': 10.0,
+            'integrated_noise_vrms': 10.0,
+            'cmrr_dc_db': 7.5,
+            'psrr_dc_db': 7.5,
+            'output_voltage_swing_range_v': 10.0,
+        },
+    },
+    3: {
+        "name": "EFFICIENCY",
+        "weights": {
+            'power_w': 60.0,
+            'gain_ol_dc_db': 30.0,
+            'integrated_noise_vrms': 10.0,
+        },
+    },
+    4: {
+        "name": "COMPACTNESS",
+        "weights": {
+            'estimated_area_um2': 60.0,
+            'power_w': 25.0,
+            'pm_deg': 15.0,
+            '_pm_deg_target': 67.5,
+            '_pm_deg_range': 7.5,
+        },
+    },
+    5: {
+        "name": "BALANCED",
+        "weights": {
+            'ugbw_hz': 25.0,
+            'gain_ol_dc_db': 25.0,
+            'power_w': 20.0,
+            'vos_v': 15.0,
+            'output_voltage_swing_range_v': 15.0,
+        },
+    },
+    6: {
+        "name": "ROBUSTNESS",
+        "weights": {
+            'gain_ol_dc_db': 15.0,
+            'pm_deg': 20.0,
+            'cmrr_dc_db': 15.0,
+            'psrr_dc_db': 15.0,
+            'output_voltage_swing_range_v': 10.0,
+            'power_w': 10.0,
+            'vos_v': 10.0,
+            '_pm_deg_target': 70.0,
+            '_pm_deg_range': 10.0,
+        },
+    },
+    7: {
+        "name": "LINEARITY",
+        "weights": {
+            'thd_db': 35.0,
+            'output_voltage_swing_range_v': 20.0,
+            'gain_ol_dc_db': 15.0,
+            'cmrr_dc_db': 10.0,
+            'psrr_dc_db': 10.0,
+            'integrated_noise_vrms': 10.0,
+        },
+    },
+    8: {
+        "name": "LOW_HEADROOM",
+        "weights": {
+            'output_voltage_swing_range_v': 30.0,
+            'gain_ol_dc_db': 20.0,
+            'ugbw_hz': 15.0,
+            'power_w': 15.0,
+            'pm_deg': 10.0,
+            'vos_v': 10.0,
+            '_pm_deg_target': 60.0,
+            '_pm_deg_range': 10.0,
+        },
+    },
+    9: {
+        "name": "STARTUP_RELIABILITY",
+        "weights": {
+            'settle_time_ns': 30.0,
+            'pm_deg': 20.0,
+            'slew_rate_v_us': 15.0,
+            'power_w': 10.0,
+            'gain_ol_dc_db': 10.0,
+            'integrated_noise_vrms': 5.0,
+            'vos_v': 10.0,
+            '_pm_deg_target': 65.0,
+            '_pm_deg_range': 10.0,
+        },
+    },
+    10: {
+        "name": "DRIVE_LOAD",
+        "weights": {
+            'slew_rate_v_us': 25.0,
+            'output_voltage_swing_range_v': 25.0,
+            'ugbw_hz': 20.0,
+            'power_w': 15.0,
+            'pm_deg': 10.0,
+            'gain_ol_dc_db': 5.0,
+            '_pm_deg_target': 62.5,
+            '_pm_deg_range': 7.5,
+        },
+    },
+}
+
+
+# ===== CLI Input Handling Functions ===== #
+
+
+def get_persona_config(persona_id):
     """
-    Normalize integer seeds into the inclusive uint32 range required by NumPy/SciPy.
+    Return persona name and weight dictionary.
 
     Parameters:
     -----------
-    seed (int | None): Input seed.
+    persona_id (int): Persona identifier in [1, 10].
 
     Returns:
     --------
-    int | None: Normalized seed or None.
+    tuple[str, dict]: Persona name and corresponding weights.
     """
-    if seed is None:
-        return None
-    return int(seed) % (MAX_UINT32_SEED + 1)
-
-
-def configure_reproducibility(global_seed=None, numpy_seed=None, torch_seed=None):
-    """
-    Apply deterministic seeds for NumPy and PyTorch when provided.
-
-    Parameters:
-    -----------
-    global_seed (int | None): Fallback seed used if specific library seed is missing.
-    numpy_seed (int | None): Explicit NumPy RNG seed.
-    torch_seed (int | None): Explicit PyTorch RNG seed.
-
-    Returns:
-    --------
-    dict: Applied seed values.
-    """
-    applied_numpy_seed = normalize_seed(numpy_seed if numpy_seed is not None else global_seed)
-    applied_torch_seed = normalize_seed(torch_seed if torch_seed is not None else global_seed)
-
-    if applied_numpy_seed is not None:
-        np.random.seed(int(applied_numpy_seed))
-    if applied_torch_seed is not None:
-        torch.manual_seed(int(applied_torch_seed))
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(int(applied_torch_seed))
-
-    return {
-        'numpy_seed': applied_numpy_seed,
-        'torch_seed': applied_torch_seed,
-    }
-
-
-def save_run_config_snapshot(output_dir, algorithm, personas_weights, run_config, lambdas=None, netlist_name="", seed_info=None):
-    """
-    Save a snapshot of the run configuration for reproducibility and ablation studies.
-
-    Parameters:
-    -----------
-    output_dir (str): Directory to save the config snapshot.
-    algorithm (str): 'sobol' or 'turbo_m'.
-    personas_weights (dict): Dictionary of persona -> weights for TuRBO, or None for Sobol.
-    run_config (dict): Full run configuration dict.
-    lambdas (dict, optional): Smooth penalty lambdas dict. Defaults included if None.
-    netlist_name (str, optional): Name of the netlist being optimized.
-    """
-    try:
-        git_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], 
-                                            cwd=os.path.dirname(__file__)).decode().strip()[:8]
-    except Exception:
-        git_commit = "unknown"
-    
-    config_snapshot = {
-        'timestamp': time.time(),
-        'date': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'code_version': git_commit,
-        'algorithm': algorithm,
-        'netlist_name': netlist_name,
-        'run_config': {k: v for k, v in run_config.items()
-                       if k != 'api_key'
-                       and not (algorithm == 'sobol' and k in ('turbo_batch_size', 'num_trust_regions', 'selected_weights'))},
-    }
-
-    # smooth penalty lambdas are TuRBO-specific — omit from Sobol snapshots
-    if algorithm == 'turbo_m':
-        if lambdas is None:
-            lambdas = {
-                '_lam_pm': 2.0e3,
-                '_lam_gain': 2.0e3,
-                '_lam_ugbw': 2.0e3,
-            }
-        config_snapshot['smooth_penalty_lambdas'] = lambdas
-
-    if seed_info:
-        config_snapshot['seed_info'] = seed_info
-    
-    if algorithm == 'turbo_m' and personas_weights:
-        config_snapshot['personas'] = personas_weights
-    
-    os.makedirs(output_dir, exist_ok=True)
-    run_stamp = time.strftime('%Y%m%d_%H%M%S')
-    metadata_path = os.path.join(output_dir, 'metadata.json')
-    metadata_snapshot_path = os.path.join(output_dir, f'metadata_{run_stamp}.json')
-    # Backward-compatible filenames still written for older tooling.
-    config_path = os.path.join(output_dir, 'run_config.json')
-    snapshot_path = os.path.join(output_dir, f'run_config_{run_stamp}.json')
-
-    for path in [metadata_path, metadata_snapshot_path, config_path, snapshot_path]:
-        with open(path, 'w') as f:
-            json.dump(config_snapshot, f, indent=2)
-
-    print_success(
-        f"Saved metadata snapshot to {metadata_path} and {metadata_snapshot_path} "
-        f"(compat: {config_path}, {snapshot_path})"
-    )
-
-
-# ===== User Input Functions ===== #
-
+    cfg = PERSONA_CONFIGS.get(persona_id)
+    if cfg is None:
+        raise ValueError(f"Unknown persona id: {persona_id}")
+    return cfg["name"], cfg["weights"]
 
 def get_valid_int(prompt, min_val, max_val, default):
     """
@@ -234,7 +248,14 @@ def get_valid_int(prompt, min_val, max_val, default):
 
     Parameters:
     -----------
-    prompt (str): The prompt to display to the user.
+    prompt (str): Prompt label shown to the user.
+    min_val (int): Minimum allowed value.
+    max_val (int): Maximum allowed value.
+    default (int): Default value if user input is empty.
+
+    Returns:
+    --------
+    int: User-selected integer within [min_val, max_val].
     """
     while True:
         user_input = input(f" {Style.ARROW} {prompt} [{default}]: ").strip()
@@ -254,11 +275,8 @@ def get_valid_int(prompt, min_val, max_val, default):
 
 def get_netlist_selection():
     """
+    Returns a list of tuples: [(netlist_name, full_path), ...]
     Allows user to select a custom directory or use the default.
-
-    Returns:
-    --------
-    list of tuples: [(netlist_name_base, full_path), ...] for selected netlists. Can be one or many if batch mode is chosen.
     """
     print_section("Netlist Selection")
     
@@ -272,7 +290,6 @@ def get_netlist_selection():
     
     base_path = default_path
     if custom_path:
-        # handle relative paths
         expanded_path = os.path.expanduser(custom_path)
         expanded_path = os.path.abspath(expanded_path)
         
@@ -306,15 +323,13 @@ def get_netlist_selection():
         if not user_input:
             continue
             
-        # check for selection
+        # check for file selection
         if user_input.isdigit():
             idx = int(user_input) - 1
             if 0 <= idx < len(available_files):
-                # SINGLE FILE
                 fname = available_files[idx]
                 return [(fname[:-4], os.path.join(base_path, fname))]
             elif idx == len(available_files):
-                # ALL
                 print_info(f"Selected Batch Mode: {len(available_files)} netlists")
                 return [(f[:-4], os.path.join(base_path, f)) for f in available_files]
             else:
@@ -339,14 +354,14 @@ def get_netlist_selection():
 def get_turbo_mode(use_turbo):
     """
     Prompts for Blind vs Sight (Warm Start from Sobol) mode.
-    
+
     Parameters:
     -----------
-    use_turbo (bool): Whether to use TuRBO mode.
+    use_turbo (bool): Whether TuRBO mode is active.
 
     Returns:
     --------
-    str: 'blind' or 'sight' based on user selection.
+    str: 'blind' or 'sight'.
     """
     if not use_turbo:
         return "blind"
@@ -356,108 +371,108 @@ def get_turbo_mode(use_turbo):
     print("   2. Sight (Warm Start) - Load Sobol data from results directory")
     
     while True:
-        try:
-            sel = input(f" {Style.ARROW} Enter selection [1]: ").strip()
-            if not sel:
-                sel = "1"
-            
-            if sel == "1":
-                return "blind"
-            elif sel == "2":
-                print_success("Sight mode selected. Sobol parquets will be loaded from the results directory.")
-                return "sight"
-            else:
-                print_error("Invalid selection.")
-        except ValueError:
-            pass
+        sel = input(f" {Style.ARROW} Enter selection [1]: ").strip()
+        if not sel:
+            sel = "1"
 
-
-# ===== Data Processing Functions ===== #
+        if sel == "1":
+            return "blind"
+        if sel == "2":
+            print_success("Sight mode selected. Sobol parquets will be loaded from the results directory.")
+            return "sight"
+        print_error("Invalid selection.")
 
 
 def _parquet_to_specs(df):
     """
     Reconstruct spec dicts from a Parquet DataFrame (out_ columns).
-    
+    Returns list[dict] aligned with df rows.
+
     Parameters:
     -----------
-    df (pd.DataFrame): DataFrame loaded from a Parquet file, containing columns of values
+    df (pd.DataFrame): DataFrame containing 'out_' columns for specs.
 
     Returns:
     --------
-    list of dicts: Each dict corresponds to a row in the DataFrame and contains the extracted specs with cleaned keys
+    list[dict]: List of spec dictionaries for each row, with keys stripped of 'out_' prefix.
+                Special handling for 'output_voltage_swing_range_v' to reconstruct as tuple.
     """
     spec_cols = [c for c in df.columns if c.startswith('out_')]
 
     # detect swing columns
-    swing_min = 'out_output_voltage_swing_min' if 'out_output_voltage_swing_min' in df.columns else None
-    swing_max = 'out_output_voltage_swing_max' if 'out_output_voltage_swing_max' in df.columns else None
+    swing_min = 'out_output_voltage_swing_min_v' if 'out_output_voltage_swing_min_v' in df.columns else None
+    swing_max = 'out_output_voltage_swing_max_v' if 'out_output_voltage_swing_max_v' in df.columns else None
     
     specs_list = []
     for _, row in df.iterrows():
         s = {}
         s['valid'] = bool(row.get('valid', False))
         for col in spec_cols:
-            if 'output_voltage_swing' in col:
+            if 'output_voltage_swing_range_v' in col or 'output_voltage_swing_min_v' in col or 'output_voltage_swing_max_v' in col:
                 continue
             key = col[4:]
             if key == 'area':
-                key = 'estimated_area'
+                key = 'estimated_area_um2'
             val = row[col]
             if pd.notna(val):
                 s[key] = float(val)
-        # reconstruct swing tuple
+        # Reconstruct swing tuple
         if swing_min and swing_max and pd.notna(row[swing_min]) and pd.notna(row[swing_max]):
-            s['output_voltage_swing'] = (float(row[swing_min]), float(row[swing_max]))
+            s['output_voltage_swing_range_v'] = (float(row[swing_min]), float(row[swing_max]))
         specs_list.append(s)
     return specs_list
 
 
 def _find_sobol_parquets(netlist_name_base, results_dir):
     """
-    Scan the results directory for Sobol Parquet files matching this netlist.
-    Looks in {results_dir}/sobol/ for any .parquet files.
-    
+    Scan the Sobol results directory for Parquet files matching this netlist.
+
     Parameters:
     -----------
-    netlist_name_base (str): The base name of the netlist (without .scs)
-    results_dir (str): The directory where results are stored
+    netlist_name_base (str): Base netlist name used as parquet filename prefix.
+    results_dir (str): Netlist-specific results directory.
 
     Returns:
     --------
-    list of str: Paths to found Sobol Parquet files (may be empty).
+    list[str]: Sorted full paths for matching parquet files; empty if none found.
     """
     sobol_dir = os.path.join(results_dir, "sobol")
     if not os.path.isdir(sobol_dir):
         return []
-    
+
+    prefix = f"{netlist_name_base}_"
     found = []
     for f in sorted(os.listdir(sobol_dir)):
-        if f.endswith('.parquet'):
+        if f.endswith('.parquet') and f.startswith(prefix):
             found.append(os.path.join(sobol_dir, f))
     return found
 
 
 def run_optimization_task(netlist_name_base, scs_file_path, run_config):
     """
-    Executes the optimization pipeline for a single netlist.
+    Execute the optimization pipeline for a single netlist.
+
+    This function is the orchestration layer for setup, simulation dispatch,
+    checkpointing, and data logging. The optimization objective itself is
+    defined by the active weight dictionary passed into `TurboMSizingGenerator`
+    (consumed in `scalarize_specs` inside `algorithms/turbo_m/turbo_m.py`).
 
     Parameters:
     -----------
-    netlist_name_base (str): Base name of the netlist (without .scs)
-    scs_file_path (str): Full path to the .scs netlist file
-    run_config (dict): Configuration dictionary containing parameters for the run
+    netlist_name_base (str): Base name of the netlist (without .scs).
+    scs_file_path (str): Full path to the .scs netlist file.
+    run_config (dict): Configuration dictionary containing target parameters.
     """
     print_section(f"Processing: {netlist_name_base}")
     
-    # unpack Config
+    # unpack config
     n_workers = run_config['n_workers']
     adaptive_workers = run_config.get('adaptive_workers', False)
     use_turbo = run_config['use_turbo']
     use_mass_collection = run_config['use_mass_collection']
     
 
-    # pipeline setup
+    # pipeline execution setup
     results_dir = os.path.join(run_config['output_dir'], netlist_name_base)
     os.makedirs(results_dir, exist_ok=True)
 
@@ -465,16 +480,13 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
     sobol_dir = os.path.join(results_dir, "sobol")
     turbo_dir = os.path.join(results_dir, "turbo_m")
 
+    # ensure directories exist
     os.makedirs(sobol_dir, exist_ok=True)
     os.makedirs(turbo_dir, exist_ok=True)
 
     collector = None
-    sobol_parquet = os.path.join(sobol_dir, f"{netlist_name_base}_sobol.parquet")
     sobol_state = os.path.join(sobol_dir, "sobol_state.txt")
-    turbo_parquet = os.path.join(turbo_dir, f"{netlist_name_base}_turbo_m.parquet")
-    turbo_state = os.path.join(turbo_dir, "turbo_state.pt")
 
-    # choose collector output dir based on algorithm
     if use_mass_collection:
         if use_turbo:
             collector = DataCollector(output_dir=turbo_dir, buffer_size=1000, parquet_name=f"{netlist_name_base}_turbo_m.parquet")
@@ -485,44 +497,32 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
 
     # extract parameters
     params_id = extract_parameter_names(scs_file_path)
-    ignored_params = ['fet_num', 'vdd', 'vcm', 'tempc', 'cload_val']
+    ignored_params = ['fet_num', 'vdd', 'vcm', 'tempc', 'cload_val', 'loop_mode']
     sizing_params_for_gen = [p for p in params_id if p not in ignored_params]
     
-    # initialize Generator (Mapping Layer)
-    base_global_seed = run_config.get('global_seed', 20260319)
-    seed_scope = run_config.get('seed_scope', 'per_netlist')
-    seed_mode = run_config.get('seed_mode', 'specified')
-    netlist_seed_offset = 0
-    if seed_scope == 'per_netlist':
-        # stable per-topology offset so each netlist has unique but reproducible seeds
-        netlist_seed_offset = int(hashlib.sha256(netlist_name_base.encode('utf-8')).hexdigest()[:8], 16)
-    global_seed = normalize_seed(int(base_global_seed) + int(netlist_seed_offset))
-    sobol_seed = normalize_seed(run_config.get('sobol_seed', global_seed + 1000))
-    turbo_seed_base = normalize_seed(run_config.get('turbo_seed_base', global_seed + 2000))
-    applied_seeds = configure_reproducibility(
-        global_seed=global_seed,
-        numpy_seed=run_config.get('numpy_seed'),
-        torch_seed=run_config.get('torch_seed'),
-    )
-    seed_info = {
-        'seed_mode': seed_mode,
-        'seed_scope': seed_scope,
-        'base_global_seed': base_global_seed,
-        'netlist_seed_offset': netlist_seed_offset,
-        'global_seed': global_seed,
-        'sobol_seed': sobol_seed,
-        'numpy_seed': applied_seeds['numpy_seed'],
-        'torch_seed': applied_seeds['torch_seed'],
-    }
-    if use_turbo:
-        seed_info['turbo_seed_base'] = turbo_seed_base
+    generator = SobolSizingGenerator(sizing_params_for_gen, seed=None, topology=netlist_name_base)
 
-    generator = SobolSizingGenerator(sizing_params_for_gen, seed=sobol_seed)
+    required_context_keys = {"fet_num", "vdd", "vcm", "tempc", "is_hp", "n_state", "p_state", "cload_val"}
+
+    def _validate_sample_context(samples, stage_name):
+        if not samples:
+            return
+        missing = []
+        for idx, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                missing.append((idx, "<not-a-dict>"))
+                continue
+            miss = sorted(k for k in required_context_keys if k not in sample)
+            if miss:
+                missing.append((idx, ",".join(miss)))
+                if len(missing) >= 3:
+                    break
+        if missing:
+            details = "; ".join([f"idx={i} missing={m}" for i, m in missing])
+            raise RuntimeError(f"{stage_name}: missing required context keys for extractor ({details})")
     
-    opt_dim = generator.dim_sizing if use_turbo else generator.dim
+    opt_dim = generator.dim if use_turbo else generator.dim
 
-    # configure extractor
-    sim_flags = {'ac': True, 'dc': True, 'noise': True, 'tran': True}
     opamp_type = classify_opamp_type(scs_file_path)
     
     full_lb = [-1e9] * len(params_id)
@@ -531,9 +531,9 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
     config_env = EnvironmentConfig(scs_file_path, opamp_type, {}, params_id, full_lb, full_ub, results_dir=turbo_dir if use_turbo else sobol_dir)
     config_dict = config_env.get_config_dict()
     
-    # if running multiple personas re-initialize the extractor and agent inside the loop
+    # default optimization goals
     if not use_turbo:
-        specs_id = ["gain_ol", "ugbw", "pm", "power", "vos"]
+        specs_id = ["gain_ol_dc_db", "ugbw_hz", "pm_deg", "power_w", "vos_v"]
         specs_ideal = [0.0] * len(specs_id) 
         specs_weights = [1.0, 1.0, 10.0, 10.0, 10.0]
         
@@ -544,39 +544,20 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
             specs_id=specs_id,            
             specs_ideal=specs_ideal,
             specs_weights=specs_weights,
-            sim_flags=sim_flags,
-            vcm=0,                 
-            vdd=0,                 
-            tempc=27,              
-            ub=full_ub,            
-            lb=full_lb,            
             config=config_dict,
-            fet_num=0,             
             results_dir=sobol_dir, 
             netlist_name=netlist_name_base,
             size_map=size_map,
-            mode="mass_collection" if use_mass_collection else "test_drive",
-            sim_mode=run_config.get('sim_mode', 'complete')
+            mode="mass_collection"
         )
 
-    # shared execution loop variables
     n_max_evals = run_config['n_max_evals']
     interrupted = False
 
     try:
         if not use_turbo:
+            # Sobol mode
             print(f" {Style.INFO} Mode: Sobol Exploration (One-shot)")
-            
-            # Save run config snapshot for reproducibility
-            save_run_config_snapshot(
-                sobol_dir, 
-                algorithm='sobol',
-                personas_weights=None,
-                run_config=run_config,
-                netlist_name=netlist_name_base,
-                seed_info=seed_info
-            )
-            
             start_idx = 0
             if os.path.exists(sobol_state):
                 try:
@@ -586,16 +567,13 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                 except Exception as e:
                     print_error(f"Failed to read Sobol state: {e}")
             samples = generator.generate(n_max_evals, start_idx=start_idx)
+            _validate_sample_context(samples, "sobol generation")
             # inject flags
             for s in samples:
                 s['run_gatekeeper'] = 1
                 s['run_full_char'] = 1
-
-            try:
-                os.environ.pop('ASPECTOR_RESULTS_DIR', None)
-            except Exception:
-                pass
-
+            
+            # pre-check to catch major issues before running large batch
             print_info("Running pre-flight simulation check (1 sample, no multiprocessing)...")
             try:
                 preflight_result = extractor(samples[0], sim_id=0)
@@ -640,9 +618,7 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                                 'sim_id': full_res.get('id', None),
                                 'sim_status': full_res.get('sim_status', -1) if isinstance(full_res, dict) else -1,
                                 'algorithm': 'sobol',
-                                'netlist_name': netlist_name_base,
-                                'sobol_index': start_idx + idx,
-                                'sobol_seed': sobol_seed
+                                'netlist_name': netlist_name_base
                             },
                             operating_points=(full_res.get('operating_points') if isinstance(full_res, dict) else None)
                         )
@@ -678,142 +654,42 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                                 'sim_id': None,
                                 'sim_status': -1,
                                 'algorithm': 'sobol',
-                                'netlist_name': netlist_name_base,
-                                'sobol_index': start_idx + idx,
-                                'sobol_seed': sobol_seed
+                                'netlist_name': netlist_name_base
                             },
                             operating_points=operating_points
                         )
                 
-                # periodically save Sobol state to survive hard crashes
+                # save Sobol state in batches of 1000 to survive hard crashes (atomic write)
                 if completed % 1000 == 0:
                     try:
-                        with open(sobol_state, 'w') as f:
+                        with open(sobol_state + '.tmp', 'w') as f:
                             f.write(str(start_idx + completed))
+                        os.replace(sobol_state + '.tmp', sobol_state)
                     except Exception:
                         pass
 
-            # save final state
+            # save final state (atomic write)
             try:
-                with open(sobol_state, 'w') as f:
+                with open(sobol_state + '.tmp', 'w') as f:
                     f.write(str(start_idx + n_max_evals))
+                os.replace(sobol_state + '.tmp', sobol_state)
                 print_info(f"Saved Sobol state at index {start_idx + n_max_evals}")
             except Exception as e:
                 print_error(f"Failed to save Sobol state: {e}")
         else:
-            # TURBO MODE
+            # TuRBO-M mode
             personas_to_run = run_config.get('personas_to_run', [5])
             
-            # Define all persona weights upfront for config snapshot and loop
-            all_personas = {
-                1: {
-                    'name': 'SPEED',
-                    'weights': {
-                        'ugbw': 40.0,
-                        'slew_rate': 30.0,
-                        'settle_time': 20.0,
-                        'pm': 10.0,
-                        'gain_ol': 1.0,
-                        'power': 1.0,
-                        '_pm_target': 62.5,
-                        '_pm_range': 2.5
-                    }
-                },
-                2: {
-                    'name': 'PRECISION',
-                    'weights': {
-                        'vos': 30.0,
-                        'gain_ol': 25.0,
-                        'thd': 10.0,
-                        'integrated_noise': 10.0,
-                        'cmrr': 7.5,
-                        'psrr': 7.5,
-                        'output_voltage_swing': 10.0,
-                        'ugbw': 2.0,
-                        'pm': 1.0
-                    }
-                },
-                3: {
-                    'name': 'EFFICIENCY',
-                    'weights': {
-                        'power': 60.0,
-                        'integrated_noise': 10.0,
-                        'gain_ol': 2.0,
-                        'ugbw': 1.0,
-                        'pm': 1.0
-                    }
-                },
-                4: {
-                    'name': 'COMPACTNESS',
-                    'weights': {
-                        'estimated_area': 60.0,
-                        'power': 25.0,
-                        'gain_ol': 2.0,
-                        'ugbw': 1.0,
-                        'pm': 2.0,
-                        '_pm_target': 67.5,
-                        '_pm_range': 7.5
-                    }
-                },
-                5: {
-                    'name': 'BALANCED',
-                    'weights': {
-                        'ugbw': 25.0,
-                        'gain_ol': 25.0,
-                        'pm': 5.0,
-                        'power': 20.0,
-                        'vos': 15.0,
-                        'output_voltage_swing': 15.0,
-                        'integrated_noise': 5.0,
-                        'thd': 5.0
-                    }
-                }
-            }
-            
-            # Save run config snapshot with all personas before starting optimization
-            personas_for_config = {all_personas[idx]['name']: all_personas[idx]['weights'] 
-                                  for idx in personas_to_run if idx in all_personas}
-            save_run_config_snapshot(
-                turbo_dir,
-                algorithm='turbo_m',
-                personas_weights=personas_for_config,
-                run_config=run_config,
-                netlist_name=netlist_name_base,
-                seed_info=seed_info
-            )
-            
-            # Define smooth penalty lambdas (these are the defaults; can be overridden per-persona)
-            default_lambdas = {
-                '_lam_pm': 2.0e3,
-                '_lam_gain': 2.0e3,
-                '_lam_ugbw': 2.0e3,
-            }
-            
             for p_idx in personas_to_run:
-                # Retrieve persona definition
-                if p_idx not in all_personas:
-                    print_error(f"Unknown persona index {p_idx}, skipping.")
-                    continue
-                
-                persona_def = all_personas[p_idx]
-                p_name = persona_def['name']
-                selected_weights = dict(persona_def['weights'])
-                
-                # Merge lambdas into weights if persona doesn't specify them (use defaults)
-                persona_lambdas = {k: v for k, v in selected_weights.items() if k.startswith('_lam_')}
-                if not persona_lambdas:
-                    persona_lambdas = default_lambdas
+                p_name, objective_weights = get_persona_config(p_idx)
                     
                 print(f"\n {Style.DOUBLE_LINE}")
                 print(f" {Style.INFO} Starting TuRBO-M Optimization Loop - Persona: {p_name}")
                 print(f" {Style.DOUBLE_LINE}")
-
-                persona_seed = normalize_seed(run_config.get(f'turbo_seed_{p_name.lower()}', turbo_seed_base + p_idx))
-                print_info(f"Using seeds -> sobol: {sobol_seed}, turbo persona {p_name}: {persona_seed}, numpy: {applied_seeds['numpy_seed']}, torch: {applied_seeds['torch_seed']}")
                 
-                specs_id = list(selected_weights.keys())
+                specs_id = list(objective_weights.keys())
                 specs_ideal = [0.0] * len(specs_id) 
-                specs_weights_list = list(selected_weights.values())
+                specs_weights_list = list(objective_weights.values())
                 
                 extractor = Extractor(
                     dim=len(params_id),
@@ -822,30 +698,21 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                     specs_id=specs_id,            
                     specs_ideal=specs_ideal,
                     specs_weights=specs_weights_list,
-                    sim_flags=sim_flags,
-                    vcm=0,                 
-                    vdd=0,                 
-                    tempc=27,              
-                    ub=full_ub,            
-                    lb=full_lb,            
                     config=config_dict,
-                    fet_num=0,             
                     results_dir=turbo_dir, 
                     netlist_name=netlist_name_base,
                     size_map=size_map,
-                    mode="mass_collection" if use_mass_collection else "test_drive",
-                    sim_mode=run_config.get('sim_mode', 'complete')
+                    mode="mass_collection" if use_mass_collection else "test_drive"
                 )
                 
-                # re-initialize TuRBO Agent for this persona
+                # re-initialize TuRBO agent for persona
                 print(f" {Style.CHECK} Initializing TuRBO-M Agent (Dim: {opt_dim}, M: {run_config['num_trust_regions']})")
-                turbo_agent = ASPECTOR_TurboM(
+                turbo_agent = TurboMSizingGenerator(
                     dim=opt_dim,
-                    specs_weights=selected_weights,
+                    specs_weights=objective_weights,
                     num_trust_regions=run_config['num_trust_regions'],
                     max_evals=run_config['n_max_evals'],
                     batch_size=run_config['turbo_batch_size'],
-                    seed=persona_seed,
                     verbose=True
                 )
                 
@@ -853,18 +720,18 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                 total_completed = 0
                 turbo_batch_size = run_config['turbo_batch_size']
                 
+                # use a persona-specific state file so they don't overwrite each other
                 turbo_state_persona = os.path.join(turbo_dir, f"turbo_state_{p_name.lower()}.pt")
                 
-                # resume logic
                 if os.path.exists(turbo_state_persona):
                     try:
                         turbo_agent.load_state(torch.load(turbo_state_persona))
-                        total_completed = len(turbo_agent.X) // 2
+                        total_completed = len(turbo_agent.X)
                         print_info(f"Resumed TuRBO-M state from {turbo_state_persona} (Completed: {total_completed})")
                     except Exception as e:
                         print_error(f"Failed to load TuRBO-M state: {e}")
                 
-                # warm start from sobol data
+                # warm starting from Sobol data if in sight mode and no existing TuRBO data
                 if len(turbo_agent.X) == 0 and run_config.get('turbo_mode') == 'sight':
                     sobol_parquets = _find_sobol_parquets(netlist_name_base, results_dir)
                     if not sobol_parquets:
@@ -902,26 +769,24 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                         print_success(f"Sight warm-start complete: {len(turbo_agent.X)} total points loaded.")
                         
                 while total_completed < n_max_evals:
-                    # mass runs should not preserve raw Spectre artifacts by default
-                    try:
-                        os.environ.pop('ASPECTOR_RESULTS_DIR', None)
-                    except Exception:
-                        pass
-
                     curr_batch_size = min(turbo_batch_size, n_max_evals - total_completed)
                     print(f"\n {Style.ARROW} TuRBO Asking for {curr_batch_size} candidates...")
-                    X_next = turbo_agent.ask(curr_batch_size)
+                    context_u = generator.sample_context_u(curr_batch_size)
+                    X_next = turbo_agent.ask(
+                        curr_batch_size,
+                        context_u=context_u,
+                        context_dim=len(generator.fixed_params),
+                    )
                     X_list = X_next.tolist()
-                    samples_nom = generator.generate(curr_batch_size, u_samples=X_list, robust_env=False)
-                    samples_rob = generator.generate(curr_batch_size, u_samples=X_list, robust_env=True)
-                    full_batch_samples = samples_nom + samples_rob
-                    total_sims = len(full_batch_samples)
-                    for s in full_batch_samples:
+                    batch_samples = generator.generate(curr_batch_size, u_samples=X_list)
+                    _validate_sample_context(batch_samples, "turbo batch generation")
+                    total_sims = len(batch_samples)
+                    for s in batch_samples:
                         s['run_gatekeeper'] = 1
                         s['run_full_char'] = 1
-                    print(f" {Style.ARROW} Simulating Robust Batch ({total_sims} sims for {curr_batch_size} candidates)...")
+                    print(f" {Style.ARROW} Simulating Contextual Batch ({total_sims} sims for {curr_batch_size} candidates)...")
                     sim_results = []
-                    for (b_completed, b_total, b_elapsed, data) in run_parallel_simulations(full_batch_samples, extractor, n_workers, adaptive=adaptive_workers):
+                    for (b_completed, b_total, b_elapsed, data) in run_parallel_simulations(batch_samples, extractor, n_workers, adaptive=adaptive_workers):
                         rate = b_completed / b_elapsed if b_elapsed > 0 else 0
                         print(f"   Batch Progress: {b_completed}/{total_sims} | Rate: {rate:.1f} sim/s", end='\r')
                         if data:
@@ -929,9 +794,7 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                             sim_results.append(data)
                             if use_mass_collection and len(result_val) == 3:
                                 full_res = result_val[2]
-                                flat_config = full_batch_samples[idx]
-                                # Determine if this sample is from nominal or robust environment
-                                env_type = 'nominal' if idx < curr_batch_size else 'robust'
+                                flat_config = batch_samples[idx]
                                 collector.log(
                                     flat_config,
                                     full_res['specs'],
@@ -939,11 +802,6 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                                         'sim_id': full_res['id'],
                                         'sim_status': full_res.get('sim_status', -1),
                                         'algorithm': f"turbo_m_{p_name}",
-                                        'persona_name': p_name,
-                                        'env_type': env_type,
-                                        'turbo_seed': persona_seed,
-                                        'weights_dict': selected_weights,
-                                        'lambdas_dict': persona_lambdas
                                     }
                                 )
                     results_map = {}
@@ -951,42 +809,20 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                         if len(val_tuple) >= 2 and isinstance(val_tuple[1], dict):
                             results_map[idx] = val_tuple[:2]
                     
-                    ordered_specs = []
-                    valid_indices = []
-                    n_candidates = curr_batch_size
-                    for i in range(n_candidates):
-                        idx_nom = i
-                        idx_rob = i + n_candidates
-                        res_nom = results_map.get(idx_nom)
-                        res_rob = results_map.get(idx_rob)
-                        if res_nom and res_rob:
-                            specs_nom = res_nom[1]
-                            specs_rob = res_rob[1]
-                            worst_case_specs = {}
-                            all_keys = set(specs_nom.keys()) | set(specs_rob.keys())
-                            worst_case_specs['valid'] = specs_nom.get('valid', True) and specs_rob.get('valid', True)
-                            for key in all_keys:
-                                if key == 'valid': continue
-                                val_n = specs_nom.get(key)
-                                val_r = specs_rob.get(key)
-                                if val_n is None or val_r is None: continue
-                                def is_better(v1, v2, k):
-                                    if k in ["power", "integrated_noise", "settling_time", "vos", "thd", "ibias"]:
-                                        return abs(v1) < abs(v2)
-                                    else:
-                                        return v1 > v2
-                                if is_better(val_n, val_r, key):
-                                    worst_case_specs[key] = val_r
-                                else:
-                                    worst_case_specs[key] = val_n
-                            ordered_specs.append(worst_case_specs)
-                            valid_indices.append(i)
-                    if len(valid_indices) > 0:
-                        X_valid = X_next[valid_indices]
-                        turbo_agent.tell(X_valid, ordered_specs)
-                        total_completed += len(valid_indices)
+                    completed_specs = []
+                    completed_indices = []
+                    for idx in range(curr_batch_size):
+                        result = results_map.get(idx)
+                        if result:
+                            completed_specs.append(result[1])
+                            completed_indices.append(idx)
+
+                    if len(completed_indices) > 0:
+                        X_completed = X_next[completed_indices]
+                        turbo_agent.tell(X_completed, completed_specs)
+                        total_completed += len(completed_indices)
                         best_v = min([s.best_value for s in turbo_agent.state]) if turbo_agent.state else 0.0
-                        print(f"\n {Style.CHECK} Robust Batch (Worst-Case) processed. Total: {total_completed}/{n_max_evals} Best Cost: {best_v:.4f}")
+                        print(f"\n {Style.CHECK} Contextual Batch processed. Total: {total_completed}/{n_max_evals} Best Cost: {best_v:.4f}")
                     # save TuRBO-M state after each batch
                     try:
                         torch.save({
@@ -994,17 +830,7 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                             'X': turbo_agent.X,
                             'Y': turbo_agent.Y,
                             'spec_stats': turbo_agent.spec_stats,
-                            'weights': turbo_agent.weights,
-                            'seed': turbo_agent.seed,
-                            'sobol_seed_counter': turbo_agent._sobol_seed_counter,
-                            'persona_name': p_name,
-                            'seed_info': {
-                                'global_seed': global_seed,
-                                'sobol_seed': sobol_seed,
-                                'turbo_seed': persona_seed,
-                                'numpy_seed': applied_seeds['numpy_seed'],
-                                'torch_seed': applied_seeds['torch_seed'],
-                            }
+                            'weights': turbo_agent.weights
                         }, turbo_state_persona)
                     except Exception as e:
                         print_error(f"Failed to save TuRBO-M state: {e}")
@@ -1022,9 +848,9 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
                         collector.flush()
                     except Exception:
                         pass
-                    collector.finalize(discard_partial=False, preserve_json=False)
+                    collector.finalize(discard_partial=False)
                 else:
-                    collector.finalize(discard_partial=False, preserve_json=False)
+                    collector.finalize(discard_partial=False)
             except Exception as e:
                 print_error(f"DataCollector finalize failed: {e}")
         print(f"\n\n {Style.CHECK} Pipeline finished for this netlist.")
@@ -1035,11 +861,7 @@ def run_optimization_task(netlist_name_base, scs_file_path, run_config):
 
 def main():
     """
-    Guides the user through netlist selection, parallel configuration, algorithm choice, 
-    and data collection mode. 
-    
-    Then executes the optimization loop for each selected netlist 
-    with the specified settings.
+    Main entry point for the CLI application.
     """
     clear_screen()
     print_header()
@@ -1047,7 +869,7 @@ def main():
     # 1. netlist selection
     netlist_queue = get_netlist_selection()
 
-    # 2. parallel core configuration
+    # 2. parallel core configs
     max_cores = mp.cpu_count()
     print_section("Parallel Compute Configuration")
     print(f" {Style.INFO} System has {max_cores} CPU cores available.")
@@ -1090,9 +912,7 @@ def main():
     n_max_evals = 1000
     num_trust_regions = 10
     
-    selected_weights = {} 
-    
-    # defaults
+    # default configs, will be overridden by user
     run_config = {
         "n_workers": n_workers,
         "adaptive_workers": adaptive_workers,
@@ -1100,7 +920,6 @@ def main():
         "n_max_evals": 1000,
         "turbo_batch_size": 64,
         "num_trust_regions": num_trust_regions,
-        "selected_weights": {},
         "use_mass_collection": False
     }
 
@@ -1114,14 +933,20 @@ def main():
         print("   3. Efficiency (Low Power/Noise, min UGBW)")
         print("   4. Compactness (Min Estimated Area, good Swing/Slew)")
         print("   5. Balanced (General Purpose - Demo Default)")
-        print("   6. ALL (Pareto Sweep - Runs 1-5 sequentially for Mass Data Collection)")
+        print("   6. Robustness (High PM/CMRR/PSRR, lower sensitivity)")
+        print("   7. Linearity (Low THD, strong swing/fidelity)")
+        print("   8. Low Headroom (Operate well under constrained VDD)")
+        print("   9. Startup Reliability (Fast settling, stable operating point)")
+        print("  10. Drive Load (High slew/swing under heavier loading)")
+        print("  11. ALL (Pareto Sweep - Runs 1-10 sequentially for Mass Data Collection)")
         
-        persona = get_valid_int("Enter persona", 1, 6, 6)
+        persona = get_valid_int("Enter persona", 1, 11, 11)
         
+        # persona dictionary mapping
         personas_to_run = []
-        if persona == 6:
-            print(f" {Style.INFO} Persona: PARETO SWEEP (All 5 Personas)")
-            personas_to_run = [1, 2, 3, 4, 5]
+        if persona == 11:
+            print(f" {Style.INFO} Persona: PARETO SWEEP (All 10 Personas)")
+            personas_to_run = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         else:
             personas_to_run = [persona]
             
@@ -1143,6 +968,7 @@ def main():
         run_config['turbo_batch_size'] = turbo_batch_size
         run_config['n_max_evals'] = n_max_evals
         
+        # determine if injecting preexisting Sobol samples
         run_config['turbo_mode'] = get_turbo_mode(use_turbo)
         
     else:
@@ -1156,27 +982,16 @@ def main():
         n_max_evals = n_samples
         run_config['n_max_evals'] = n_max_evals
 
-    # 4. data collection mode
-    print_section("Data Collection Mode")
-    print(" Select Data Output Strategy:")
-    print("   1. Test Drive (JSON per sim)")
-    print("   2. Mass Collection (Parquet, Batch JSONs)")
+
+    # 4. simulation mode
+    run_config['use_mass_collection'] = True
     
-    data_mode_sel = get_valid_int("Enter selection", 1, 2, 1)
-    use_mass_collection = (data_mode_sel == 2)
-    run_config['use_mass_collection'] = use_mass_collection
-    
-    # 5. simulation mode
     print_section("Simulation Mode")
-    print(" Select Simulation Mode:")
-    print("   1. Complete Mode (Runs all simulations regardless of DC operating point)")
-    print("   2. Efficient Mode (Tier 1: dcOp + STB/XF/Noise, then Tier 2: DC sweep/Transient/PSS only if Tier 1 passes)")
-    
-    sim_mode_sel = get_valid_int("Enter selection", 1, 2, 1)
-    sim_mode = "complete" if sim_mode_sel == 1 else "efficient"
+    print(" Only Mass Collection mode is supported. Data will be saved in batch format.")
+    sim_mode = "complete"
     run_config['sim_mode'] = sim_mode
     
-    # 6. output directory
+    # 5. establish output directory
     print_section("Output Directory")
     while True:
         out_dir = input(f" {Style.ARROW} Enter relative path from aspector_core to save results (e.g., results_mtlcad): ").strip()
@@ -1188,36 +1003,6 @@ def main():
             break
         else:
             print_error("You must specify an output directory.")
-
-    # 7. reproducibility / seed mode
-    print_section("Seed Configuration")
-    print(" Seed Mode:")
-    print("   1. Specified Seed (fully reproducible)")
-    print("   2. Random Seed (auto-generated, then documented)")
-    seed_mode_sel = get_valid_int("Enter selection", 1, 2, 1)
-
-    if seed_mode_sel == 1:
-        base_seed = get_valid_int(
-            "Global Seed",
-            min_val=0,
-            max_val=2_147_483_647,
-            default=20260319,
-        )
-        run_config['seed_mode'] = 'specified'
-        run_config['global_seed'] = int(base_seed)
-        print_success(f"Using specified global seed: {base_seed}")
-    else:
-        base_seed = random.SystemRandom().randint(0, 2_147_483_647)
-        run_config['seed_mode'] = 'random'
-        run_config['global_seed'] = int(base_seed)
-        print_success(f"Generated random global seed for this launch: {base_seed}")
-
-    print(" Seed Scope:")
-    print("   1. Per-Netlist (recommended, unique deterministic offset per topology)")
-    print("   2. Shared Across Netlists (all topologies use same base seed)")
-    seed_scope_sel = get_valid_int("Enter selection", 1, 2, 1)
-    run_config['seed_scope'] = 'per_netlist' if seed_scope_sel == 1 else 'shared'
-    print_info(f"Seed scope: {run_config['seed_scope']}")
     
     print()
     print(Style.DOUBLE_LINE)
@@ -1225,7 +1010,7 @@ def main():
     print(Style.DOUBLE_LINE)
     print()
     
-    # START BATCH LOOP
+    # 6. batch loop
     for i, (name, path) in enumerate(netlist_queue):
         print(f"\n[{i+1}/{len(netlist_queue)}] Running Task: {name}")
         run_optimization_task(name, path, run_config)

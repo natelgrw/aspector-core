@@ -2,48 +2,19 @@
 parser.py
 
 Author: natelgrw
-Last Edited: 01/15/2026
+Last Edited: 04/01/2026
 
-Spectre simulation result parser for extracting and converting PSF and CSV data
-into usable Python dictionaries. Handles transient analysis data export and parsing.
+Spectre parser for extracting PSF and CSV data into Python dictionaries.
 """
 
-import sys
 import os
-import scipy.interpolate as interp
-import scipy.optimize as sciopt
-import libpsf
-import fnmatch
-import pdb
-import IPython
 import subprocess
 import tempfile
 import re
-from contextlib import contextmanager
-
-# ===== Context Managers ===== #
-
-@contextmanager
-def suppress_output():
-    """
-    Context manager to redirect stdout and stderr to /dev/null.
-    [DISABLED] Useful for silencing C-level libraries (like libpsf) and verbose prints.
-    """
-    yield
-    # with open(os.devnull, "w") as devnull:
-    #     old_stdout = os.dup(sys.stdout.fileno())
-    #     old_stderr = os.dup(sys.stderr.fileno())
-    #     try:
-    #         sys.stdout.flush()
-    #         sys.stderr.flush()
-    #         os.dup2(devnull.fileno(), sys.stdout.fileno())
-    #         os.dup2(devnull.fileno(), sys.stderr.fileno())
-    #         yield
-    #     finally:
-    #         os.dup2(old_stdout, sys.stdout.fileno())
-    #         os.dup2(old_stderr, sys.stderr.fileno())
-    #         os.close(old_stdout)
-    #         os.close(old_stderr)
+import fnmatch
+import random
+import time
+import libpsf
 
 # ===== Constants ===== #
 
@@ -74,12 +45,11 @@ exit"""
 
 class FileNotCompatible(Exception):
     """
-    Exception raised when a file is not compatible with libpsf parser.
+    Exception class raised when a file is not compatible with libpsf parser.
     
     Initialization Parameters:
     --------------------------
-    message : str
-        Description of the compatibility issue.
+    message (str): Description of the compatibility issue.
     """
     def __init__(self, *args, **kwargs):
 
@@ -95,47 +65,31 @@ def is_ignored(string):
 
     Parameters:
     -----------
-    string : str
-        Filename to check.
-    
+    string (str): Filename to check against ignore patterns.
+
     Returns:
     --------
-    bool
-        True if filename matches any ignore pattern, False otherwise.
+    bool: True if the filename matches any ignore pattern, False otherwise.
     """
     return any([fnmatch.fnmatch(string, pattern) for pattern in IGNORE_LIST])
 
 
 def ocean_export_csv(dir_file_path, csv_output_path_voutp, csv_output_path_voutn, include_voutn=True):
     """
-    Runs an OCEAN script to export transient signals to CSV files.
-
-    Executes the Cadence OCEAN tool to extract voltage waveforms from PSF results
-    and convert them to CSV format for easier parsing.
-
+    Export transient signals to CSV using OCEAN script.
+    
+    Extracts voltage waveforms from PSF results and converts to CSV format.
+    
     Parameters:
     -----------
-    dir_file_path : str
-        Path to the directory containing PSF simulation results.
-    csv_output_path_voutp : str
-        Output CSV file path for positive output voltage.
-    csv_output_path_voutn : str
-        Output CSV file path for negative output voltage.
-    include_voutn : bool
-        If True, exports both Voutp and Voutn. If False, exports only Voutp.
-    
-    Returns:
-    --------
-    None
-    
-    Raises:
-    -------
-    RuntimeError
-        If OCEAN tool returns non-zero exit code.
+    dir_file_path (str): Path to directory containing PSF results.
+    csv_output_path_voutp (str): Output CSV path for positive voltage.
+    csv_output_path_voutn (str): Output CSV path for negative voltage.
+    include_voutn (bool): If True, export both Voutp and Voutn; else only Voutp.
     """
     template = OCEAN_TEMPLATE_BOTH if include_voutn else OCEAN_TEMPLATE_SINGLE
     
-    # create temporary OCEAN script file
+    # create temporary OCEAN script
     with tempfile.NamedTemporaryFile(mode='w', suffix='.ocn', delete=False) as tmp_script:
         script_path = tmp_script.name
         tmp_script.write(template % {
@@ -145,43 +99,42 @@ def ocean_export_csv(dir_file_path, csv_output_path_voutp, csv_output_path_voutn
         })
 
     try:
-        # execute OCEAN tool with script
-        result = subprocess.run(
-            ["ocean", "-nograph", "-restore", script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=100
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"OCEAN error:\n{result.stderr}")
+        # retry with jitter to avoid synchronized license-server bursts
+        max_retries = 4
+        retry_jitter_s = (2.0, 5.0)
+        last_err = "unknown error"
+
+        for attempt in range(max_retries):
+            try:
+                result = subprocess.run(
+                    ["ocean", "-nograph", "-restore", script_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=100
+                )
+                if result.returncode == 0:
+                    return
+                last_err = result.stderr.strip() or f"non-zero return code: {result.returncode}"
+            except subprocess.TimeoutExpired:
+                last_err = "timeout after 100s"
+
+            if attempt < (max_retries - 1):
+                time.sleep(random.uniform(*retry_jitter_s))
+
+        raise RuntimeError(f"OCEAN error after {max_retries} attempts: {last_err}")
     finally:
         os.remove(script_path)
 
 
 def parse_ocean_csv(file_path, key_name, data_dict):
     """
-    Parses OCEAN CSV export file and appends data to dictionary.
-
-    Converts time and voltage values to standard units:
-    - Time: nanoseconds
-    - Voltage: millivolts
-
-    Parameters:
-    -----------
-    file_path : str
-        Path to the OCEAN CSV output file.
-    key_name : str
-        Dictionary key to store the parsed data under.
-    data_dict : dict
-        Dictionary to append parsed data to.
+    Parse OCEAN CSV export and append data to dictionary.
     
-    Returns:
-    --------
-    None
-        Modifies data_dict in place.
+    Converts time to nanoseconds and voltage to millivolts.
+    Modifies data_dict in place.
     """
-    # unit conversion factors for time
+    # time unit conversion: normalize to nanoseconds
     unit_to_multiplier_time = {
         "s": 1e9,      # seconds → nanoseconds
         "n": 1,        # nanoseconds → nanoseconds
@@ -189,14 +142,14 @@ def parse_ocean_csv(file_path, key_name, data_dict):
         "f": 1e-6,     # femtoseconds → nanoseconds
     }
 
-    # unit conversion factors for voltage
+    # voltage unit conversion: normalize to millivolts
     unit_to_multiplier_voltage = {
         "V": 1000,     # volts → millivolts
         "m": 1,        # millivolts → millivolts
         "u": 1e-3,     # microvolts → millivolts
     }
 
-    # parse CSV file line by line
+    # parse csv file line by line
     with open(file_path, "r") as f:
         for line in f:
             line = line.strip()
@@ -227,40 +180,26 @@ def parse_ocean_csv(file_path, key_name, data_dict):
 # ===== Spectre Parser Class ===== #
 
 
-class SpectreParser(object):
+class SpectreParser:
     """
     Parser for Spectre simulation results.
-
-    Handles parsing of PSF (Post-Simulation Format) files and OCEAN CSV exports
-    to extract simulation results into Python dictionaries.
+    Handles PSF (Post-Simulation Format) files and OCEAN CSV exports.
     """
 
     @classmethod
     def parse(cls, raw_folder):
         """
-        Parses all simulation results from a results folder.
-
-        Processes both PSF result files and OCEAN-exported CSV files in the folder.
-        Extracts signals and sweep information into a unified dictionary.
-
-        Parameters:
-        -----------
-        raw_folder : str
-            Path to the folder containing simulation results.
+        Parse all simulation results from a results folder.
         
-        Returns:
-        --------
-        data : dict
-            Dictionary mapping result names to signal data and values.
+        Extracts phase margin, ugbw from margin.stb files if present.
         """
         folder_path = os.path.abspath(raw_folder)
         data = dict()
         try:
-            files =  os.listdir(folder_path)
+            files = os.listdir(folder_path)
         except FileNotFoundError:
             return data
-        
-        # iterate through all files in results folder
+
         for file in files:
             if is_ignored(file):
                 continue
@@ -272,31 +211,20 @@ class SpectreParser(object):
                 base_name = file.replace(".tran.tran", "")
                 output_csv_voutp = os.path.join(folder_path, f"{base_name}_Voutp.csv")
                 output_csv_voutn = os.path.join(folder_path, f"{base_name}_Voutn.csv")
-
-                # export transient results to CSV handling single ended and differential cases
                 if not os.path.exists(output_csv_voutp):
                     try:
-                        # print(f"Exporting {file_path} ...")
                         try:
-                            with suppress_output():
-                                ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=True)
+                            ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=True)
                             has_voutn = True
                         except RuntimeError:
-                            # Fallback: Assume failure might be due to missing Voutn
-                            with suppress_output():
-                                ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
+                            ocean_export_csv(file_path, output_csv_voutp, output_csv_voutn, include_voutn=False)
                             has_voutn = False
-                    except Exception as e:
-                        # print(f"Failed to export {file}: {e}")
+                    except Exception:
                         continue
                 else:
                     has_voutn = os.path.exists(output_csv_voutn)
-
-                # parse ocean csv data
-                tran_data = [] # List of (time, voltage) tuples
+                tran_data = []
                 parse_ocean_csv(output_csv_voutp, "temp_key", { "temp_key": tran_data })
-                
-                # Convert list of tuples to dictionary of lists
                 tran_dict = {}
                 if tran_data:
                     times, vouts = zip(*tran_data)
@@ -305,59 +233,40 @@ class SpectreParser(object):
                 else:
                     tran_dict['time'] = []
                     tran_dict['Voutp'] = []
-
                 if has_voutn and os.path.exists(output_csv_voutn):
-                     tran_data_n = []
-                     parse_ocean_csv(output_csv_voutn, "temp_key", { "temp_key": tran_data_n })
-                     
-                     if tran_data_n:
-                         _, vouts_n = zip(*tran_data_n) # assume times match
-                         tran_dict['Voutn'] = list(vouts_n)
-                
+                    tran_data_n = []
+                    parse_ocean_csv(output_csv_voutn, "temp_key", { "temp_key": tran_data_n })
+                    if tran_data_n:
+                        _, vouts_n = zip(*tran_data_n)
+                        tran_dict['Voutn'] = list(vouts_n)
                 data[base_name] = tran_dict
-
                 continue
 
-            # process PSF files
+            # process other psf files
             try:
-                with suppress_output():
-                    datum = cls.process_file(file_path)
+                datum = cls.process_file(file_path)
             except (FileNotCompatible, RuntimeError, Exception):
                 continue
-
-            # extract signal name from filename
             _, kwrd = os.path.split(file)
-            # Keep .fd extension for PSS frequency-domain results so
-            # thd_pss.fd and thd_pss.pss get distinct keys (avoids
-            # non-deterministic overwrite from os.listdir ordering).
             if not kwrd.endswith('.fd'):
                 kwrd = os.path.splitext(kwrd)[0]
             data[kwrd] = datum
-
         return data
 
     @classmethod
     def process_file(cls, file):
         """
-        Processes a single PSF result file.
-
-        Extracts signal data from PSF file using libpsf library.
-        If sweep parameters exist, includes sweep variable names and values.
-
+        Process a single PSF result file.
+        
+        Extracts signal data using libpsf; includes sweep parameters if present.
+        
         Parameters:
         -----------
-        file : str
-            Path to the PSF file to process.
+        file (str): Path to the PSF file.
         
         Returns:
         --------
-        datum : dict
-            Dictionary containing signal data and sweep information if applicable.
-        
-        Raises:
-        -------
-        FileNotCompatible
-            If PSF file is not compatible with libpsf parser.
+        datum (dict): Signal data and sweep information.
         """
         fpath = os.path.abspath(file)
         try:
@@ -368,14 +277,14 @@ class SpectreParser(object):
         is_swept = psfobj.is_swept()
         datum = dict()
         
-        # extract all signal data (skip individual signals that cause libpsf C++ errors)
+        # extract all signal data; skip signals that cause libpsf errors
         for signal in psfobj.get_signal_names():
             try:
                 datum[signal] = psfobj.get_signal(signal)
             except (RuntimeError, Exception):
                 continue
 
-        # add sweep parameters if present
+        # include sweep parameters if present
         if is_swept:
             try:
                 datum['sweep_vars'] = psfobj.get_sweep_param_names()

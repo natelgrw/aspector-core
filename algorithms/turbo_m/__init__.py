@@ -1,1 +1,1 @@
-from .turbo_m import ASPECTOR_TurboM
+from .turbo_m import TurboMSizingGenerator

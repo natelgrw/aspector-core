@@ -1,6 +1,9 @@
 """
 collector.py
 
+Author: natelgrw
+Last Edited: 04/01/2025
+
 Data Collection module for Mass Data Generation.
 Buffers simulation results into intermediate JSON files and merges them into a final Parquet file.
 """
@@ -8,54 +11,158 @@ Buffers simulation results into intermediate JSON files and merges them into a f
 import os
 import json
 import uuid
+import math
 import pandas as pd
 import time
 import glob
 import re
 from collections import defaultdict
 
+OP_KEY_RE = re.compile(r'^op_(MM\d+)_(.+)$')
+
+# Immediate flush threshold to prevent OOM with large datasets (6.4M+ points)
+IMMEDIATE_FLUSH_THRESHOLD = 5000
+
+CANONICAL_SPEC_KEYS = [
+    'estimated_area_um2',
+    'cmrr_dc_db',
+    'gain_ol_dc_db',
+    'integrated_noise_vrms',
+    'output_voltage_swing_range_v',
+    'output_voltage_swing_min_v',
+    'output_voltage_swing_max_v',
+    'pm_deg',
+    'power_w',
+    'psrr_dc_db',
+    'settle_time_ns',
+    'slew_rate_v_us',
+    'thd_db',
+    'ugbw_hz',
+    'vos_v',
+]
+
+CANONICAL_OP_PARAMS = [
+    'region_of_operation', 'ids', 'vds', 'vgs', 'gm', 'gds', 'vth', 'vdsat',
+    'cgg', 'cgs', 'cdd', 'cgd', 'css'
+]
+
 class DataCollector:
+
+    @staticmethod
+    def _to_json_safe(value):
+        """
+        Recursively convert NaN/Inf values to None so JSON stays standards-compliant.
+        """
+        if isinstance(value, dict):
+            return {k: DataCollector._to_json_safe(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [DataCollector._to_json_safe(v) for v in value]
+        if isinstance(value, tuple):
+            return [DataCollector._to_json_safe(v) for v in value]
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+        return value
+
     def __init__(self, output_dir, buffer_size=1000, parquet_name="dataset.parquet", max_rows_per_file=50000):
         """
-        Initialize DataCollector.
+        Initialize the DataCollector class.
         
-        Args:
-            output_dir (str): Directory to save intermediate files and final parquet.
-            buffer_size (int): Number of records to hold in memory before flush.
-            parquet_name (str): Name of the final parquet file.
+        Parameters:
+        -----------
+        output_dir (str): Directory to save intermediate files and final parquet.
+        buffer_size (int): Number of records to hold in memory before flush.
+        parquet_name (str): Name of the final parquet file.
+        max_rows_per_file (int): Maximum number of rows per output parquet file.
         """
         self.output_dir = output_dir
         self.buffer_size = buffer_size
         self.buffer = []
         self.parquet_name = parquet_name
         self.dataset_path = os.path.join(output_dir, parquet_name)
-        # Maximum number of rows per output parquet file (per-topology). When reached,
-        # finalize will emit a numbered parquet part and may delete consumed JSONs.
         self.max_rows_per_file = max_rows_per_file
+        self.topology_op_components = defaultdict(set)
         
         os.makedirs(output_dir, exist_ok=True)
+
+    @staticmethod
+    def _extract_mm_components_from_record(record):
+        """
+        Extract transistor component names (MM0, MM1, ...) from flattened op keys.
+        """
+        mm_components = set()
+        if not isinstance(record, dict):
+            return mm_components
+        for key in record.keys():
+            match = OP_KEY_RE.match(str(key))
+            if match:
+                mm_components.add(match.group(1))
+        return mm_components
+
+    def _update_topology_components(self, topo, record=None, operating_points=None):
+        """
+        Track all MM component names observed for a topology.
+        """
+        if topo is None:
+            topo = 'unknown'
+
+        if operating_points:
+            for comp in operating_points.keys():
+                if isinstance(comp, str) and comp.startswith('MM'):
+                    self.topology_op_components[topo].add(comp)
+
+        if record:
+            self.topology_op_components[topo].update(self._extract_mm_components_from_record(record))
+
+    def _pad_record_schema(self, record, topo):
+        """
+        Ensure a record conforms to the topology-wide spec and operating-point schema.
+        """
+        nan_value = float('nan')
+        mm_components = set(self.topology_op_components.get(topo, set()))
+        mm_components.update(self._extract_mm_components_from_record(record))
+
+        for spec_key in CANONICAL_SPEC_KEYS:
+            record.setdefault(f'out_{spec_key}', nan_value)
+        record.setdefault('out_output_voltage_swing_range_v_val', nan_value)
+
+        for mm_name in mm_components:
+            for param_name in CANONICAL_OP_PARAMS:
+                record.setdefault(f'op_{mm_name}_{param_name}', nan_value)
+
+        return record
         
     def log(self, config, specs, meta=None, operating_points=None):
         """
         Log a single simulation result.
         
-        Args:
-            config (dict): Input parameters (Sizing + Env).
-            specs (dict): Output specifications.
-            meta (dict, optional): Metadata (sim_id, timestamp).
-            operating_points (dict, optional): Operating points data.
+        Parameters:
+        -----------
+        config (dict): Input parameters (Sizing + Env).
+        specs (dict): Output specifications.
+        meta (dict, optional): Metadata (sim_id, timestamp).
+        operating_points (dict, optional): Operating points data.
         """
         record = {}
+        nan_value = float('nan')
         
-        # Add Input Config
+        # add input configuration
         for k, v in config.items():
             record[f"in_{k}"] = v
 
-        # Ensure common input parameters exist for differential netlists
-        try:
-            is_diff = record.get('is_diff', False)
-        except Exception:
-            is_diff = False
+        # Determine is_diff: explicit meta flag takes precedence over netlist name parsing
+        if meta and 'is_diff' in meta:
+            is_diff = bool(meta['is_diff'])
+        else:
+            # Fallback to netlist name parsing (less reliable for large-scale data)
+            try:
+                netname = meta.get('netlist_name') if meta else None
+                netname = netname or record.get('netlist_name') or ''
+                is_diff = True if isinstance(netname, str) and 'differential' in netname.lower() else False
+            except Exception:
+                is_diff = False
+        
+        record['is_diff'] = is_diff
 
         if is_diff:
             required_inputs = {
@@ -80,13 +187,14 @@ class DataCollector:
                 if in_key not in record:
                     record[in_key] = default
             
-        # Add Output Specs
+        # add output specs
+        sim_status = meta.get('sim_status') if meta else None
+        is_fully_valid = (sim_status == 2)
+
         if specs:
-            valid = specs.get('valid', False)
-            record['valid'] = valid
+            record['valid'] = is_fully_valid
             for k, v in specs.items():
                 if k == 'valid': continue
-                # Handle tuples (like swing [min, max]) by converting to scalar or string
                 if isinstance(v, (list, tuple)):
                     record[f"out_{k}_min"] = v[0]
                     record[f"out_{k}_max"] = v[1]
@@ -96,83 +204,55 @@ class DataCollector:
         else:
             record['valid'] = False
             
-        # Add Operating Points
+        # add operating points
         if operating_points:
             for comp, params in operating_points.items():
                 for param_name, val in params.items():
                     record[f"op_{comp}_{param_name}"] = val
                     
         if meta:
-            # Remove 'env' if present to avoid redundancy/errors
             meta_copy = dict(meta)
             meta_copy.pop('env', None)
-            
-            # JSON-serialize dict fields (weights_dict, lambdas_dict) for JSON/Parquet compatibility
-            for dict_key in ['weights_dict', 'lambdas_dict']:
-                if dict_key in meta_copy and isinstance(meta_copy[dict_key], dict):
-                    try:
-                        meta_copy[dict_key] = json.dumps(meta_copy[dict_key])
-                    except Exception:
-                        pass  # If serialization fails, leave as-is and let json.dump handle it
-            
             record.update(meta_copy)
-            # Add is_diff flag based on netlist name: True if 'differential' in name
-            try:
-                netname = meta.get('netlist_name') or record.get('netlist_name') or ''
-                record['is_diff'] = True if isinstance(netname, str) and 'differential' in netname.lower() else False
-            except Exception:
-                record['is_diff'] = False
             
         record['timestamp'] = time.time()
-        # Always add algorithm and netlist_name if present in meta
+        # always add algorithm and netlist_name if present in meta
         if meta:
             if 'algorithm' in meta:
                 record['algorithm'] = meta['algorithm']
             if 'netlist_name' in meta:
                 record['netlist_name'] = meta['netlist_name']
-        # Ensure differential netlists include a complete set of spec keys and OP fields
+
+        topo_name = record.get('netlist_name') or 'unknown'
+        self._update_topology_components(topo_name, record=record, operating_points=operating_points)
+
         try:
             is_diff = record.get('is_diff', False)
         except Exception:
             is_diff = False
 
-        if is_diff:
-            # Required spec keys and conservative defaults for failed sims
-            required_specs = {
-                'estimated_area': 0.0,
-                'cmrr': -1000,
-                'gain_ol': -1000,
-                'integrated_noise': 0.0,
-                'output_voltage_swing': 0.0,
-                'pm': -180,
-                'power': 0.0,
-                'psrr': -1000,
-                'settle_time': 1000,
-                'slew_rate': 0.0,
-                'thd': 1000,
-                'ugbw': 1.0,
-                # Use the same numeric fallback used by measurement managers.
-                'vos': 10.0
-            }
+        if not record['valid']:
+            for key in list(record.keys()):
+                if key.startswith('out_') and not key.endswith('_valid'):
+                    record[key] = nan_value
+                if key.startswith('op_'):
+                    record[key] = nan_value
 
-            for k, default in required_specs.items():
-                out_key = f'out_{k}'
+            for spec_key in CANONICAL_SPEC_KEYS:
+                out_key = f'out_{spec_key}'
                 if out_key not in record:
-                    record[out_key] = default
+                    record[out_key] = nan_value
+            if 'out_output_voltage_swing_range_v_val' not in record:
+                record['out_output_voltage_swing_range_v_val'] = nan_value
 
-            # Ensure operating point and capacitance keys exist for a small set of FETs
-            # (MM0..MM4) to keep schema consistent even when OP data is missing.
-            op_params = ['region_of_operation', 'ids', 'vds', 'vgs', 'gm', 'gds', 'vth', 'vdsat']
-            cap_params = ['cgg', 'cgs', 'cdd', 'cgd', 'css']
-            for mm in range(5):
-                for p in op_params:
-                    key = f'op_MM{mm}_{p}'
-                    if key not in record:
-                        record[key] = None
-                for p in cap_params:
-                    key = f'op_MM{mm}_{p}'
-                    if key not in record:
-                        record[key] = None
+            if is_diff:
+                for mm in sorted(self.topology_op_components.get(topo_name, set())):
+                    for param_name in CANONICAL_OP_PARAMS:
+                        key = f'op_{mm}_{param_name}'
+                        if key not in record:
+                            record[key] = nan_value
+
+        self._pad_record_schema(record, topo_name)
 
         self.buffer.append(record)
         
@@ -191,24 +271,25 @@ class DataCollector:
         batch_path = os.path.join(self.output_dir, batch_filename)
         
         try:
-            # Preserve numeric fidelity: do not round or coerce floats here.
+            safe_buffer = [self._to_json_safe(rec) for rec in self.buffer]
             with open(batch_path, 'w') as f:
-                json.dump(self.buffer, f, indent=2)
+                json.dump(safe_buffer, f, indent=2, allow_nan=False)
         except Exception as e:
             print(f"[!] Failed to write batch {batch_filename}: {e}")
             
-        self.buffer = [] # Clear buffer
+        self.buffer = [] 
 
     def finalize(self, discard_partial=True, preserve_json=True):
         """
         Merges all intermediate JSON files into a single Parquet file and cleans up.
         
-        Args:
-            discard_partial (bool): If True, discard any unflushed buffer (< buffer_size).
-                                    This prevents duplicates on resume since the Sobol/TuRBO
-                                    state checkpoint only advances on full-batch boundaries.
+        Parameters:
+        -----------
+        discard_partial (bool): If True, discard any unflushed buffer (< buffer_size). This prevents duplicates on 
+                                resume since the Sobol/TuRBO state checkpoint only advances on full-batch boundaries.
+        preserve_json (bool): If True, keep intermediate JSON files for debugging. Otherwise, remove them after aggregation.
         """
-        # Handle partial buffer
+        # handle partial buffer
         if discard_partial:
             if self.buffer:
                 print(f"[i] Discarding {len(self.buffer)} buffered records (partial batch).")
@@ -216,12 +297,10 @@ class DataCollector:
         else:
             self.flush()
 
-        # Find only intermediate batch files under output_dir (recursive).
-        # This intentionally excludes run metadata files (run_config*.json, metadata*.json)
-        # so they are never ingested as simulation records or deleted during cleanup.
+        # find all JSON and JSONL files under output_dir
         json_files = []
-        json_files.extend(sorted(glob.glob(os.path.join(self.output_dir, "**", "batch_*.json"), recursive=True)))
-        json_files.extend(sorted(glob.glob(os.path.join(self.output_dir, "**", "batch_*.jsonl"), recursive=True)))
+        json_files.extend(sorted(glob.glob(os.path.join(self.output_dir, "**", "*.json"), recursive=True)))
+        json_files.extend(sorted(glob.glob(os.path.join(self.output_dir, "**", "*.jsonl"), recursive=True)))
         # remove duplicates and sort
         json_files = sorted(list(dict.fromkeys(json_files)))
 
@@ -229,14 +308,13 @@ class DataCollector:
             print("No JSON files found to aggregate into Parquet.")
             return
 
-        # Streaming aggregation: accumulate records per-topology and flush to numbered parquet parts
-        buffers = defaultdict(list)      # topo -> list of (record_dict, source_json_path)
-        seen_ids = defaultdict(set)      # topo -> set(sim_id)
-        jf_remaining = {}                # jf -> remaining record count not yet flushed
-        part_idx = defaultdict(lambda: 1)  # topo -> next part index
+        # streaming aggregation
+        buffers = defaultdict(list) 
+        seen_ids = defaultdict(set)
+        jf_remaining = {} 
+        part_idx = defaultdict(lambda: 1) 
 
-        # Inspect existing parquet parts in output_dir and initialize part indices
-        # and seen_ids so we continue numbering and avoid duplicates across runs.
+        # inspect existing parquet parts in output_dir and initialize part indices
         try:
             parquet_files = sorted(glob.glob(os.path.join(self.output_dir, "*.parquet")))
             part_re = re.compile(r"(?P<topo>.+)_(?P<idx>\d+)\.parquet$")
@@ -252,51 +330,77 @@ class DataCollector:
                         part_idx[topo] = idx + 1
                 except Exception:
                     pass
-                # Load existing sim_id column to seed seen_ids for this topology
                 try:
                     existing_ids = pd.read_parquet(p, columns=['sim_id'])
                     if 'sim_id' in existing_ids.columns:
                         for sid in existing_ids['sim_id'].dropna().unique():
                             seen_ids[topo].add(sid)
                 except Exception:
-                    # ignore read errors; dedupe will still work for new sim_ids
                     pass
         except Exception:
             pass
 
-        # Initialize seen_ids from existing parquet parts (so we don't duplicate across runs)
+        # initialize seen_ids from existing parquet parts and pre-scan topology schemas
         for jf in json_files:
-            # Skip markers/metadata in marker dirs
             if os.path.sep + 'markers' + os.path.sep in jf:
                 continue
             try:
-                # Count records in jf for bookkeeping
                 if jf.lower().endswith('.jsonl'):
-                    cnt = 0
                     with open(jf, 'r') as f:
                         for line in f:
-                            if line.strip():
-                                cnt += 1
-                    jf_remaining[jf] = cnt
+                            line = line.strip()
+                            if not line:
+                                continue
+                            jf_remaining[jf] = jf_remaining.get(jf, 0) + 1
+                            try:
+                                item = json.loads(line)
+                            except Exception:
+                                continue
+                            topo = item.get('netlist_name') or item.get('requested_name') or 'unknown'
+                            self._update_topology_components(topo, record=item)
                 else:
                     with open(jf, 'r') as f:
                         data = json.load(f)
                         if isinstance(data, list):
                             jf_remaining[jf] = len(data)
+                            for item in data:
+                                if isinstance(item, dict):
+                                    topo = item.get('netlist_name') or item.get('requested_name') or 'unknown'
+                                    self._update_topology_components(topo, record=item)
                         else:
                             jf_remaining[jf] = 1
+                            if isinstance(data, dict):
+                                topo = data.get('netlist_name') or data.get('requested_name') or 'unknown'
+                                self._update_topology_components(topo, record=data)
             except Exception:
                 jf_remaining[jf] = jf_remaining.get(jf, 0)
 
-        # Helper to write a parquet part for a topology
         def _write_part(topo, items):
-            # items: list of tuples (record_dict, source_jf)
+            """
+            Write a part file for a given topology with the provided items.
+            Also handles cleanup of source JSON files if all their records are consumed.
+
+            Parameters:
+            -----------
+            topo (str): Topology name for this part.
+            items (list): List of (record, source_json_file) tuples to write in this part.
+
+            Returns:
+            --------
+            (bool, str or None): (success flag, error message if failed)
+            """
             nonlocal part_idx
             if not items:
                 return True, None
-            records = [rec for (rec, _jf) in items]
+            records = [self._pad_record_schema(rec, topo) for (rec, _jf) in items]
             try:
                 df_part = pd.DataFrame(records)
+                # Enforce numeric dtypes for measurement columns so missing values
+                # are represented consistently as NaN when read back with pandas.
+                numeric_prefixes = ('out_', 'op_')
+                for col in df_part.columns:
+                    if col.startswith(numeric_prefixes):
+                        df_part[col] = pd.to_numeric(df_part[col], errors='coerce')
             except Exception as e:
                 return False, f"build_df_failed: {e}"
 
@@ -307,7 +411,6 @@ class DataCollector:
             out_path = os.path.join(self.output_dir, out_name)
             tmp_path = out_path + ".tmp"
             try:
-                df_part = df_part.dropna(axis=1, how='all')
                 df_part.to_parquet(tmp_path)
                 os.replace(tmp_path, out_path)
                 print(f"Successfully wrote {len(df_part)} records to {out_path}")
@@ -330,7 +433,13 @@ class DataCollector:
                     pass
                 return False, str(e)
 
-        # Stream through JSON files and route records into per-topo buffers
+        # stream through JSON files and route records into per-topo buffers
+        # Note: Sim ID deduplication (seen_ids) is enabled for safety during resume scenarios.
+        # For trusted sequential workflows (Sobol with atomic checkpoints), deduplication overhead
+        # can be disabled by setting use_dedup=False (future enhancement).
+        
+        record_count_since_flush = 0
+        
         for jf in json_files:
             if os.path.sep + 'markers' + os.path.sep in jf:
                 continue
@@ -357,6 +466,18 @@ class DataCollector:
                             if sid is not None:
                                 seen_ids[topo].add(sid)
                             buffers[topo].append((item, jf))
+                            record_count_since_flush += 1
+                            
+                            # Immediate flush to prevent OOM on large datasets (6.4M+ points)
+                            if record_count_since_flush >= IMMEDIATE_FLUSH_THRESHOLD:
+                                for topo_flush, items_flush in list(buffers.items()):
+                                    if len(items_flush) > 0:
+                                        ok, err = _write_part(topo_flush, items_flush)
+                                        if not ok:
+                                            print(f"[!] Failed to write part for {topo_flush}: {err}")
+                                        else:
+                                            buffers[topo_flush] = []
+                                record_count_since_flush = 0
                 else:
                     with open(jf, 'r') as f:
                         data = json.load(f)
@@ -374,6 +495,18 @@ class DataCollector:
                                 if sid is not None:
                                     seen_ids[topo].add(sid)
                                 buffers[topo].append((item, jf))
+                                record_count_since_flush += 1
+                                
+                                # Immediate flush every ~5000 records to prevent OOM
+                                if record_count_since_flush >= IMMEDIATE_FLUSH_THRESHOLD:
+                                    for topo_flush, items_flush in list(buffers.items()):
+                                        if len(items_flush) > 0:
+                                            ok, err = _write_part(topo_flush, items_flush)
+                                            if not ok:
+                                                print(f"[!] Failed to write part for {topo_flush}: {err}")
+                                            else:
+                                                buffers[topo_flush] = []
+                                    record_count_since_flush = 0
                         elif isinstance(data, dict):
                             item = data
                             if 'specs' not in item and 'netlist_name' not in item and set(item.keys()) <= {'id','sim_id','sim_status','netlist','timestamp'}:
@@ -387,20 +520,22 @@ class DataCollector:
                             if sid is not None:
                                 seen_ids[topo].add(sid)
                             buffers[topo].append((item, jf))
+                            record_count_since_flush += 1
+                            
+                            # Immediate flush for OOM prevention
+                            if record_count_since_flush >= IMMEDIATE_FLUSH_THRESHOLD:
+                                for topo_flush, items_flush in list(buffers.items()):
+                                    if len(items_flush) > 0:
+                                        ok, err = _write_part(topo_flush, items_flush)
+                                        if not ok:
+                                            print(f"[!] Failed to write part for {topo_flush}: {err}")
+                                        else:
+                                            buffers[topo_flush] = []
+                                record_count_since_flush = 0
             except Exception as e:
                 print(f"[!] Error reading {jf}: {e}")
 
-            # After processing this JSON file, check if any topo reached the threshold and flush parts
-            for topo, items in list(buffers.items()):
-                if len(items) >= self.max_rows_per_file:
-                    to_write = items[:self.max_rows_per_file]
-                    ok, err = _write_part(topo, to_write)
-                    if not ok:
-                        print(f"[!] Failed to write part for {topo}: {err}")
-                    # remove written items from buffer
-                    buffers[topo] = items[self.max_rows_per_file:]
-
-        # After all JSON files processed, flush remaining buffers to final parts
+        # after all JSON files processed, flush remaining buffers to final parts
         for topo, items in list(buffers.items()):
             if not items:
                 continue
@@ -414,12 +549,11 @@ class DataCollector:
                     break
                 i += self.max_rows_per_file
 
-        # If caller requested preserving JSON files, leave them; otherwise clean up any leftover JSONs
         if preserve_json:
             print("Preserving intermediate JSON files for debugging (preserve_json=True).")
             return
 
-        # Remove any remaining json files that weren't removed during part writes
+        # remove any remaining json files that weren't removed during part writes
         for jf, rem in list(jf_remaining.items()):
             if rem == 0:
                 # already removed

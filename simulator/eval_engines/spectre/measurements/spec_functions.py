@@ -2,371 +2,517 @@
 spec_functions.py
 
 Author: natelgrw
-Last Edited: 02/06/2026
+Last Edited: 04/01/2026
 
 Shared utility functions for calculating op-amp specifications
-from simulation results. Used by both SingleEnded and Differential
+from simulation results. Used by both single ended and differential
 measurement managers.
 """
 
 import numpy as np
+import scipy.integrate as sinteg
 import scipy.interpolate as interp
 import scipy.optimize as sciopt
-import scipy.integrate as scint
 
 
-class SpecCalc(object):
+class SpecCalc:
     """
-    Collection of static methods for specification calculation.
+    Static helper functions for measurement and spec calculations.
+    Supported specs for differential and single ended op-amps include:
+
+    - Open Loop DC Gain (dB)
+    - Unity-Gain Bandwidth (Hz)
+    - Phase Margin (degrees)
+    - DC CMRR (dB)
+    - DC PSRR (dB)
+    - Power (W)
+    - Estimated Area (um^2)
+    - Integrated Noise (Vrms)
+    - Settling Time (ns)
+    - Slew Rate (V/us)
+    - Vos (V)
+    - Output Swing (V, V)
+    - Total Harmonic Distortion (dB)
     """
+
+    @staticmethod
+    def _coerce_signal_vector(signal):
+        """
+        Normalize libpsf signal containers into a flat numeric vector.
+
+        Parameters:
+        -----------
+        signal: The raw signal data from libpsf, which can be in various formats
+
+        Returns:
+        --------
+        np.ndarray: A 1D numpy array of floats or complex numbers representing the signal.
+        """
+        if signal is None:
+            return None
+
+        arr = np.asarray(signal)
+        if arr.ndim == 0:
+            return arr.reshape(1)
+
+        if np.iscomplexobj(arr):
+            return np.ravel(arr.astype(complex, copy=False))
+
+        if arr.ndim >= 2 and arr.shape[-1] == 2:
+            flat = np.reshape(arr, (-1, 2))
+            return flat[:, 0].astype(float) + 1j * flat[:, 1].astype(float)
+
+        if arr.dtype != object:
+            return np.ravel(arr)
+
+        coerced = []
+        for sample in signal:
+            if isinstance(sample, (list, tuple, np.ndarray)) and len(sample) == 2:
+                coerced.append(complex(float(sample[0]), float(sample[1])))
+            else:
+                coerced.append(sample)
+        return np.asarray(coerced)
 
     @staticmethod
     def find_dc_gain(vout):
         """
         Finds the DC gain from output voltage array (index 0).
+
+        Parameters:
+        -----------
+        vout (array-like): The output voltage samples from the simulation.
+
+        Returns:
+        --------
+        float: The estimated DC gain in V/V, or None if it cannot be determined.
         """
         if vout is None or len(vout) == 0:
             return None
         return float(np.abs(vout)[0])
 
     @staticmethod
-    def _get_best_crossing(xvec, yvec, val):
+    def _get_best_crossing(xvec, yvec, val, use_log_x=False):
         """
-        Finds the best crossing point where yvec crosses val.
-        Returns (crossing_x, valid_bool)
-        """
-        if len(xvec) < 2: 
-             return None, False
-             
-        try:
-            interp_fun = interp.InterpolatedUnivariateSpline(xvec, yvec)
-            def fzero(x): return interp_fun(x) - val
-            
-            # Check if crossing is possible in range
-            y_min, y_max = np.min(yvec), np.max(yvec)
-            if val < y_min or val > y_max:
-                return None, False
+        Find first crossing point with linear interpolation.
 
-            return sciopt.brentq(fzero, xvec[0], xvec[-1]), True
-        except:
+        Parameters:
+        -----------
+        xvec (array-like): The x-axis values (e.g., frequency or time).
+        yvec (array-like): The y-axis values (e.g., gain or voltage).
+        val (float): The target y-value to find the crossing for.
+        use_log_x (bool): If True, performs interpolation in log-x space.
+
+        Returns:
+        --------
+        tuple: (crossing_x, valid) where crossing_x is the estimated x-value of the crossing, and valid is a 
+               boolean indicating if a crossing was found.
+
+        """
+        if len(xvec) < 2 or len(yvec) < 2:
             return None, False
+
+        try:
+            x_arr = np.ravel(np.asarray(xvec, dtype=float))
+            y_arr = np.ravel(np.asarray(yvec, dtype=float))
+        except Exception:
+            return None, False
+
+        n = min(len(x_arr), len(y_arr))
+        if n < 2:
+            return None, False
+        x_arr = x_arr[:n]
+        y_arr = y_arr[:n]
+
+        finite_mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+        x_arr = x_arr[finite_mask]
+        y_arr = y_arr[finite_mask]
+        if len(x_arr) < 2:
+            return None, False
+
+        # find first interval where y-val changes sign
+        y_shifted = y_arr - val
+        sign_changes = np.where(np.diff(np.sign(y_shifted)) != 0)[0]
+
+        if len(sign_changes) == 0:
+            return None, False
+
+        # take first crossing
+        idx = sign_changes[0]
+        
+        x1, x2 = x_arr[idx], x_arr[idx+1]
+        y1, y2 = y_arr[idx], y_arr[idx+1]
+
+        # linear interpolation
+        if np.isclose(y2, y1):
+            return float(x1), True
+
+        if use_log_x:
+            log_x1, log_x2 = np.log10(max(x1, 1e-15)), np.log10(max(x2, 1e-15))
+            log_x_target = log_x1 + (val - y1) * (log_x2 - log_x1) / (y2 - y1)
+            return 10**log_x_target, True
+        else:
+            x_target = x1 + (val - y1) * (x2 - x1) / (y2 - y1)
+            return float(x_target), True
 
     @staticmethod
     def find_ugbw(freq, vout):
         """
-        Finds Unity Gain Bandwidth using Log-Log interpolation for high accuracy.
-        Assumes gain decreases monotonically near 0dB.
+        Find unity-gain bandwidth using log-log interpolation.
+
+        Parameters:
+        -----------
+        freq (array-like): The frequency samples from the simulation.
+        vout (array-like): The complex output voltage samples.
+
+        Returns:
+        --------
+        tuple: (ugbw, valid)
         """
-        if freq is None or vout is None or len(freq) != len(vout): 
+        if freq is None or vout is None or len(freq) < 2 or len(freq) != len(vout): 
             return None, False
             
         gain = np.abs(vout)
         
-        # 1. Find the first time gain crosses 1.0 (0dB) from above
-        # Valid UGBW requires gain starting > 1
+        # valid ugbw requires initial gain above unity
         if gain[0] < 1.0:
             return None, False
             
-        # Find indices where gain transitions from >=1 to <1
-        # This approach avoids oscillating spline solutions
+        # find first gain crossing from above unity to below unity
         crossings = np.where((gain[:-1] >= 1.0) & (gain[1:] < 1.0))[0]
         
         if len(crossings) == 0:
             return None, False
             
-        # Take the first crossing (standard definition)
         idx = crossings[0]
         
-        # 2. Log-Log Interpolation
-        # log(gain) vs log(freq) is linear for dominant pole systems
-        # y = log10(gain), x = log10(freq)
-        # We want x where y = log10(1) = 0
+        # log-log interpolation
+        f1, f2 = max(freq[idx], 1e-12), max(freq[idx+1], 1e-12)
+        g1, g2 = max(gain[idx], 1e-12), max(gain[idx+1], 1e-12)
         
-        f1, f2 = freq[idx], freq[idx+1]
-        g1, g2 = gain[idx], gain[idx+1]
+        log_f1, log_f2 = np.log10(f1), np.log10(f2)
+        log_g1, log_g2 = np.log10(g1), np.log10(g2)
         
-        # Avoid log(0)
-        if f1 <= 0 or f2 <= 0 or g1 <= 0 or g2 <= 0:
-            return None, False
-            
-        x1, x2 = np.log10(f1), np.log10(f2)
-        y1, y2 = np.log10(g1), np.log10(g2)
-        
-        if y1 == y2: # Horizontal segment?
-             return None, False
+        if np.isclose(log_g1, log_g2): 
+             log_f_target = log_f1
+        else:
+             log_f_target = log_f1 - log_g1 * (log_f2 - log_f1) / (log_g2 - log_g1)
              
-        # Interpolate for y=0
-        # (0 - y1) = (y2 - y1) / (x2 - x1) * (x_target - x1)
-        # x_target = x1 + (0 - y1) * (x2 - x1) / (y2 - y1)
-        
-        x_target = x1 - y1 * (x2 - x1) / (y2 - y1)
-        ugbw = 10**x_target
+        ugbw = 10**log_f_target
         
         return float(ugbw), True
 
     @staticmethod
     def find_phm(freq, vout, ugbw, valid_ugbw):
         """
-        Finds Phase Margin at UGBW.
-        Dynamically handles probe polarity by calculating relative phase degradation.
+        Find phase margin at unity-gain bandwidth (or any target frequency).
+        Uses fast local interpolation, binary search, and strictly preserves initial phase lag.
         """
-        if not valid_ugbw or freq is None or vout is None or ugbw is None:
+        if not valid_ugbw or freq is None or vout is None or ugbw is None or np.isnan(ugbw) or ugbw <= 0:
+            return None
+
+        try:
+            freq_arr = np.ravel(np.asarray(freq, dtype=float))
+            vout_arr = np.ravel(np.asarray(vout))
+        except Exception:
+            return None
+
+        n = min(len(freq_arr), len(vout_arr))
+        if n < 2:
+            return None
+        freq_arr = freq_arr[:n]
+        vout_arr = vout_arr[:n]
+
+        finite_mask = np.isfinite(freq_arr) & np.isfinite(np.abs(vout_arr))
+        freq_arr = freq_arr[finite_mask]
+        vout_arr = vout_arr[finite_mask]
+        if len(freq_arr) < 2:
+            return None
+
+        order = np.argsort(freq_arr)
+        freq_arr = freq_arr[order]
+        vout_arr = vout_arr[order]
+
+        uniq_freq, uniq_idx = np.unique(freq_arr, return_index=True)
+        freq_arr = uniq_freq
+        vout_arr = vout_arr[uniq_idx]
+        if len(freq_arr) < 2:
             return None
             
-        phase = np.angle(vout, deg=True)
-        # 1. Unwrap Phase safely
-        phase_rad = np.deg2rad(phase)
-        phase_unwrapped = np.rad2deg(np.unwrap(phase_rad))
+        # S-Tier Fix: Binary search for the index
+        insert_idx = np.searchsorted(freq_arr, ugbw)
         
-        # 2. Linear Interpolation in Log-Freq domain
-        log_freq = np.log10(np.clip(freq, 1e-12, None))
+        # Guard against edge cases (extrapolation out of bounds)
+        if insert_idx == 0 or insert_idx >= len(freq_arr):
+            return None
+            
+        # The crossing is between idx and idx+1
+        idx = insert_idx - 1
+        
+        # Unwrap phase to prevent artificial jump artifacts
+        phase_unwrapped = np.unwrap(np.angle(vout_arr))
+        
+        p1, p2 = phase_unwrapped[idx], phase_unwrapped[idx+1]
+        f1, f2 = freq_arr[idx], freq_arr[idx+1]
+        
+        log_f1, log_f2 = np.log10(max(f1, 1e-12)), np.log10(max(f2, 1e-12))
         log_ugbw = np.log10(ugbw)
         
-        try:
-            phase_fun = interp.interp1d(log_freq, phase_unwrapped, kind='linear', fill_value="extrapolate")
-            phase_at_ugbw = float(phase_fun(log_ugbw))
+        # Local linear interpolation of the unwrapped phase
+        if np.isclose(log_f1, log_f2):
+            p_target = p1
+        else:
+            p_target = p1 + (log_ugbw - log_f1) * (p2 - p1) / (log_f2 - log_f1)
             
-            # 3. Calculate True Phase Margin
-            starting_phase = phase_unwrapped[0]
-            
-            # Normalize starting phase to either 180 or 0
-            if starting_phase > 90:
-                dc_phase = 180.0
-            elif starting_phase < -90:
-                dc_phase = -180.0
-            else:
-                dc_phase = 0.0
-                
-            # How much did the phase drop from DC to UGBW?
-            phase_drop = dc_phase - phase_at_ugbw
-            
-            # Phase margin is how far we are from a 180 degree drop
-            pm = 180.0 - phase_drop
-                
-            return float(pm)
-        except:
-            return None
-
+        p_target_deg = np.rad2deg(p_target)
+        
+        # Start exactly from the simulated phase lag at freq[0]. No "ideal" snapping.
+        dc_phase_actual_deg = np.rad2deg(phase_unwrapped[0])
+        
+        # Phase shift relative to the ACTUAL simulated baseline
+        phase_shift_deg = p_target_deg - dc_phase_actual_deg
+        
+        # Strict Phase Margin. NO modulo wrapping.
+        pm = 180.0 + phase_shift_deg
+        
+        return float(pm)
 
     @staticmethod
-    def find_integrated_noise(noise_results, f_start=1e6, f_stop=5e8, num_points=55):
+    def find_integrated_noise(noise_results, f_start=None, f_stop=None):
         """
-        Integrates total output noise safely.
+        Integrate total output noise over a specified frequency band.
+        Strictly requires the simulator to provide a unified output noise vector (ASD)
+        to guarantee correct correlated noise cancellation (e.g., tail current noise).
+
+        Parameters:
+        -----------
+        noise_results (dict): The noise simulation results.
+        f_start (float): The start frequency for integration.
+        f_stop (float): The stop frequency for integration.
+
+        Returns:
+        --------
+        float: The integrated noise in Vrms, or None if not valid.
         """
         if noise_results is None or len(noise_results) == 0:
-             return None
+            return None
 
-        # Case 1: Total Output Noise
-        preferred_out_keys = ('out', 'Vout', 'vout', 'out_diff', 'Vout_diff')
-        out_like_keys = [k for k in noise_results.keys() if 'out' in str(k).lower()]
-        target_key = next((k for k in preferred_out_keys if k in noise_results), None)
-        if target_key is None and len(out_like_keys) == 1:
-            target_key = out_like_keys[0]
+        freqs = np.ravel(np.asarray(noise_results.get('sweep_values', []), dtype=float))
+        if len(freqs) < 2:
+            return None
 
-        if target_key:
-             # SPECTRE CHECK: 'out' is usually V/sqrt(Hz) (Amplitude Spectral Density)
-             # We must square it to get V^2/Hz for integration.
-             noise_asd = np.ravel(np.abs(np.asarray(noise_results[target_key], dtype=float)))
-             freqs = np.ravel(np.asarray(noise_results.get('sweep_values', []), dtype=float))
-             n = min(len(freqs), len(noise_asd))
-             if n > 1:
-                  # simps expects y, x. Result is in V^2
-                  total_power = scint.simps(noise_asd[:n]**2, freqs[:n])
-                  return float(np.sqrt(total_power)) # Result in V_rms
-
-        # Case 2: Component Noise (MM keys)
-        # Note: Component noise is often already exported as PSD (V^2/Hz)
-        total_integrated_v2 = 0.0
-        mm_keys = [k for k in noise_results.keys() if str(k).startswith("MM")]
+        # S-Tier Fix: Enforce frequency bounds so 1/f noise doesn't blow up the integral
+        start_idx = 0
+        stop_idx = len(freqs)
         
-        if mm_keys:
-            freqs = np.ravel(np.asarray(noise_results.get('sweep_values', []), dtype=float))
-            if len(freqs) <= 1:
-                freqs = np.logspace(np.log10(f_start), np.log10(f_stop), num_points)
-            for key in mm_keys:
-                # If these are V^2/Hz, do NOT square them again.
-                try:
-                    psd_vals = np.ravel(np.asarray(noise_results[key], dtype=float))
-                except Exception:
-                    continue
-                n = min(len(psd_vals), len(freqs))
-                if n > 1:
-                    total_integrated_v2 += scint.simps(np.maximum(psd_vals[:n], 0.0), freqs[:n])
-            if total_integrated_v2 > 0.0:
-                return float(np.sqrt(total_integrated_v2))
+        if f_start is not None:
+            insert_start = np.searchsorted(freqs, f_start)
+            if insert_start < len(freqs):
+                start_idx = insert_start
+                
+        if f_stop is not None:
+            insert_stop = np.searchsorted(freqs, f_stop)
+            if insert_stop <= len(freqs):
+                stop_idx = insert_stop
+            
+        # Ensure valid slice
+        if start_idx >= stop_idx or start_idx >= len(freqs):
+            return None
+            
+        freqs_sliced = freqs[start_idx:stop_idx]
 
-        return None
+        # Strict Mode: Only accept the unified 'out' vector. 
+        if 'out' not in noise_results:
+            return None
+
+        # ASD is V/sqrt(Hz), square before integration to get V^2/Hz
+        try:
+            noise_asd = np.ravel(np.abs(np.asarray(noise_results['out'], dtype=float)))
+        except Exception:
+            return None
+            
+        # Slice to match frequency bounds
+        n_len = min(len(freqs), len(noise_asd))
+        if start_idx >= n_len:
+            return None
+            
+        noise_asd_sliced = noise_asd[start_idx:min(stop_idx, n_len)]
+        
+        if len(noise_asd_sliced) < 2:
+            return None
+        
+        # Integrate Power Spectral Density
+        total_power_v2 = sinteg.trapezoid(noise_asd_sliced**2, freqs_sliced[:len(noise_asd_sliced)])
+        return float(np.sqrt(max(total_power_v2, 0.0)))
+
 
     @staticmethod
     def find_slew_rate(tran_data, delay=5.0, lo_pct=0.1, hi_pct=0.9, min_swing=10.0):
         """
-        Calculates Slew Rate in V/us, assuming input is in [ns] and [mV].
-        Note: 1 mV/ns is exactly 1 V/us.
-        - delay=5.0: Matches 5ns step in the .scs
-        - min_swing=10.0: Requires at least 10mV of movement
+        Find slew rate from transient waveform.
+        Uses SciPy PCHIP interpolation over dense dynamic time-steps.
+
+        Units: time [ns], vout [mV]. Returns [V/us].
         """
-        if not tran_data or len(tran_data) < 5:
-            return 0.0
+        if not tran_data or len(tran_data) < 10:
+            return None
 
-        time = np.array([t for t, _ in tran_data])
-        vout = np.array([v for _, v in tran_data])
+        # Convert to numpy arrays
+        try:
+            data = np.asarray(tran_data, dtype=float)
+        except Exception:
+            return None
+        if data.ndim != 2 or data.shape[1] < 2:
+            return None
+        time, vout = data[:, 0], data[:, 1]
 
-        # Isolate post-step region (ns)
+        # 1. Isolate post-step region
         mask = time >= delay
-        if np.sum(mask) < 5: return 0.0
+        if np.sum(mask) < 5: 
+            return None
+            
         t_s, v_s = time[mask], vout[mask]
 
-        # Calculate achieved swing in mV
-        v_init = v_s[0]
-        v_final = np.mean(v_s[-max(2, int(len(v_s)*0.05)):])
-        delta_v = v_final - v_init
+        # S-TIER FIX: The SciPy Scrubber. 
+        # Removes duplicate timestamps caused by Spectre solver resets.
+        t_s, unique_indices = np.unique(t_s, return_index=True)
+        v_s = v_s[unique_indices]
         
-        if np.abs(delta_v) < min_swing:
-            return 0.0 # Circuit didn't move
+        if len(t_s) < 5:
+            return None
 
-        # Thresholds (mV)
+        # 2. Estimate steady-state from tail window
+        t_end = t_s[-1]
+        final_window_mask = t_s >= (t_end - 2.0) 
+        
+        v_init = v_s[0]
+        v_final = np.mean(v_s[final_window_mask]) if np.any(final_window_mask) else v_s[-1]
+        delta_v = v_final - v_init
+
+        # Reject small/railed movement
+        if np.abs(delta_v) < min_swing:
+            return None 
+
+        # 3. Define 10/90 thresholds
         v10 = v_init + lo_pct * delta_v
         v90 = v_init + hi_pct * delta_v
 
-        # Build a shape-preserving interpolator for sub-time-step crossings.
+        # 4. Interpolate with PCHIP
         try:
             v_interp = interp.PchipInterpolator(t_s, v_s, extrapolate=False)
         except Exception:
-            return 0.0
+            return None
 
         def _first_crossing_time(threshold, rising):
+            # Bracket first crossing
             if rising:
-                bracket = np.where((v_s[:-1] < threshold) & (v_s[1:] >= threshold))[0]
+                bracket = np.where((v_s[:-1] <= threshold) & (v_s[1:] > threshold))[0]
             else:
-                bracket = np.where((v_s[:-1] > threshold) & (v_s[1:] <= threshold))[0]
+                bracket = np.where((v_s[:-1] >= threshold) & (v_s[1:] < threshold))[0]
 
             if len(bracket) == 0:
-                idx = np.where(v_s >= threshold)[0] if rising else np.where(v_s <= threshold)[0]
-                if len(idx) == 0:
-                    return None
-                return float(t_s[int(idx[0])])
+                return None
 
             i = int(bracket[0])
             t0, t1 = float(t_s[i]), float(t_s[i + 1])
 
-            # Primary: root on PCHIP within bracket.
             try:
+                # Root-find on PCHIP curve
                 return float(sciopt.brentq(lambda tt: float(v_interp(tt) - threshold), t0, t1))
             except Exception:
-                # Fallback: linear interpolation between bracket endpoints.
+                # Linear fallback if BrentQ fails to converge
                 v0, v1 = float(v_s[i]), float(v_s[i + 1])
-                if np.isclose(v1, v0):
-                    return t1
                 return float(t0 + (t1 - t0) * (threshold - v0) / (v1 - v0))
 
         is_rising = bool(delta_v > 0)
         t10 = _first_crossing_time(v10, rising=is_rising)
         t90 = _first_crossing_time(v90, rising=is_rising)
-        if t10 is None or t90 is None:
-            return 0.0
 
-        # Ensure we have a valid time delta (ns)
+        if t10 is None or t90 is None:
+            return None
+
         dt = float(t90 - t10)
         dv = float(v90 - v10)
-        if dt < 1e-12:
-            return 0.0
 
-        # Math: (mV / ns) = (V*1e-3 / s*1e-9) = V/s * 1e6
-        # Dividing V/s by 1e6 gives V/us.
-        # Therefore: (mV / ns) == (V / us)
-        slew_rate_v_us = np.abs(dv / dt)
-        
-        return float(slew_rate_v_us)
+        # 5. Resolution guard
+        points_in_transition = np.sum((t_s >= t10) & (t_s <= t90))
+        if points_in_transition < 3:
+            return None
+
+        # 6. Final calculation (mV/ns is numerically equivalent to V/us)
+        if dt < 1e-12: 
+            return None
+            
+        return float(np.abs(dv / dt))
 
     @staticmethod
-    def find_settle_time(tran_data, tol=0.01, delay=5.0, t_stop=200.0, noise_floor_mv=0.5):
+    def find_settle_time(tran_data, vdd, tol=0.01, step_fraction=0.05, delay=5.0, noise_floor_mv=0.1):
         """
-        Calculates 1% Settling Time for automated ML dataset extraction.
-        
-        Args:
-            tran_data: List of tuples (time_ns, vout_mV).
-            tol: Fractional tolerance band (default 0.01 for 1%).
-            delay: Time in ns when the step pulse begins.
-            t_stop: Total simulation time in ns.
-            noise_floor_mv: Minimum absolute tolerance band to prevent 
-                            infinite settling times on microscopic steps.
-                            
-        Returns:
-            settle_time_ns (float): Time taken to settle within the band.
-                                    Returns t_stop (penalty) if it never settles.
+        Find settling time from transient waveform using SciPy PCHIP.
         """
-        # 1. Catch empty or crashed simulations
         if not tran_data or len(tran_data) < 10:
-            return float(t_stop)
+            return None
 
-        # 2. Convert to fast NumPy arrays
-        data = np.array(tran_data)
-        t = data[:, 0]
-        v = data[:, 1]
+        try:
+            data = np.asarray(tran_data, dtype=float)
+        except Exception:
+            return None
+        if data.ndim != 2 or data.shape[1] < 2:
+            return None
+        t, v = data[:, 0], data[:, 1]
 
-        # Isolate the post-step response
         post_step_mask = t >= delay
         if np.sum(post_step_mask) < 10:
-            return float(t_stop)
+            return None
 
-        t_post = t[post_step_mask]
-        v_post = v[post_step_mask]
+        t_post, v_post = t[post_step_mask], v[post_step_mask]
 
-        # 3. Establish Baseline & Target (Robust to high Vos)
-        # V_initial: Mean of the points immediately preceding the step
-        pre_step_mask = (t < delay) & (t > delay - 1.0) 
-        v_initial = np.mean(v[pre_step_mask]) if np.sum(pre_step_mask) > 0 else v_post[0]
+        # S-TIER FIX: The SciPy Scrubber
+        t_post, unique_indices = np.unique(t_post, return_index=True)
+        v_post = v_post[unique_indices]
+
+        # 1. Establish tolerance band from stimulus
+        ideal_step_size = float(vdd) * step_fraction
+        band = max(ideal_step_size * tol, noise_floor_mv)
         
-        # V_final: Mean of the last 10% of the window (filters high-frequency ringing)
+        # 2. Estimate final steady-state
         tail_idx = max(5, int(len(v_post) * 0.1))
         v_final = np.mean(v_post[-tail_idx:])
 
-        # 4. Calculate True Step Size & Dynamic Band
-        step_size = np.abs(v_final - v_initial)
+        # 3. Reject dead/railed designs
+        pre_step_mask = (t < delay) & (t > delay - 1.0) 
+        v_initial = np.mean(v[pre_step_mask]) if np.sum(pre_step_mask) > 0 else v_post[0]
+        achieved_swing = np.abs(v_final - v_initial)
         
-        # If the amplifier didn't move (dead design), it fails to settle
-        if step_size < noise_floor_mv:
-            return float(t_stop)
+        if achieved_swing < (ideal_step_size * 0.5):
+            return None
 
-        # Tolerance band is 1% of the TRUE movement, strictly bounded by the noise floor
-        band = max(step_size * tol, noise_floor_mv)
-        
-        # 5. Vectorized Error Calculation (Massively faster than a Python for-loop)
+        # 4. Settle check
         err = np.abs(v_post - v_final)
-        
-        # Find all indices where the error exceeds the tolerance band
         unsettled_indices = np.where(err > band)[0]
         
         if len(unsettled_indices) == 0:
-            # Settled instantly
             return 0.0
             
-        # The last time the signal was outside the band
         last_unsettled_idx = unsettled_indices[-1]
         
-        # If the last unsettled point is at the very end of the simulation, it never settled
         if last_unsettled_idx >= len(t_post) - 2:
-            return float(t_stop)
+            return None
             
-        # Refine settle boundary with a shape-preserving interpolator.
-        i0 = int(last_unsettled_idx)
-        i1 = int(last_unsettled_idx + 1)
+        # 5. Precise crossing extraction
+        i0, i1 = int(last_unsettled_idx), int(last_unsettled_idx + 1)
         t0, t1 = float(t_post[i0]), float(t_post[i1])
-        e0 = float(err[i0] - band)
-        e1 = float(err[i1] - band)
+        e0, e1 = float(err[i0] - band), float(err[i1] - band)
 
         t_settled = t1
         try:
             v_interp = interp.PchipInterpolator(t_post, v_post, extrapolate=False)
-
-            # Root where |v(t) - v_final| - band = 0 in the last unsettled bracket.
             def ferr(tt):
                 return abs(float(v_interp(tt)) - float(v_final)) - float(band)
 
             if e0 > 0.0 and e1 <= 0.0:
                 t_settled = float(sciopt.brentq(ferr, t0, t1))
         except Exception:
-            # Fallback: linear interpolation on the error crossing.
+            # Linear fallback
             if e0 > 0.0 and e1 <= 0.0 and not np.isclose(e0, e1):
                 t_settled = float(t0 + (t1 - t0) * (-e0) / (e1 - e0))
         
@@ -376,10 +522,7 @@ class SpecCalc(object):
     def extract_dc_sweep(results):
         """
         Extract DC sweep data as sorted 1D arrays (dc_offset, output).
-
-        Supports consolidated sweeps (`swing_sweep`, `dc_swing`) and
-        split sweeps (`dcswp-*`). Differential output is preferred when
-        both `Voutp` and `Voutn` are available.
+        Uses `swing_sweep` and prefers differential output when available.
         """
         def _to_1d_float(vec):
             arr = np.asarray(vec)
@@ -410,7 +553,7 @@ class SpecCalc(object):
             x = x[order]
             y = y[order]
 
-            # Merge duplicate x-values by averaging y-values.
+            # merge duplicate x-values by averaging y-values
             uniq_x, inv = np.unique(x, return_inverse=True)
             if len(uniq_x) != len(x):
                 y_accum = np.bincount(inv, weights=y)
@@ -423,80 +566,32 @@ class SpecCalc(object):
         if not isinstance(results, dict):
             return np.array([]), np.array([])
 
-        # 1) Consolidated sweep blocks
-        for swing_key in ('swing_sweep', 'dc_swing'):
-            if swing_key not in results:
-                continue
-            swing_res = results[swing_key]
-            if not isinstance(swing_res, dict) or 'sweep_values' not in swing_res:
-                continue
+        # locate swing sweep dict robustly: exact key first, then prefix variants
+        swing_res = None
+        if 'swing_sweep' in results and isinstance(results.get('swing_sweep'), dict):
+            swing_res = results['swing_sweep']
+        else:
+            for k, v in results.items():
+                if isinstance(k, str) and k.startswith('swing_sweep') and isinstance(v, dict):
+                    swing_res = v
+                    break
 
+        if isinstance(swing_res, dict) and 'sweep_values' in swing_res:
             x_raw = swing_res['sweep_values']
-            if 'Voutp' in swing_res and 'Voutn' in swing_res:
-                y_raw = np.asarray(swing_res['Voutp']) - np.asarray(swing_res['Voutn'])
-            elif 'Vout' in swing_res:
-                y_raw = swing_res['Vout']
-            elif 'Voutp' in swing_res:
-                y_raw = swing_res['Voutp']
+
+            # support parser/libpsf signal-name case variants
+            signal_lookup = {str(k): k for k in swing_res.keys()}
+            voutp_key = signal_lookup.get('Voutp')
+            voutn_key = signal_lookup.get('Voutn')
+
+            if voutp_key is not None and voutn_key is not None:
+                y_raw = np.asarray(swing_res[voutp_key]) - np.asarray(swing_res[voutn_key])
+            elif voutp_key is not None:
+                y_raw = swing_res[voutp_key]
             else:
-                continue
+                return np.array([]), np.array([])
 
             x, y = _sanitize_xy(x_raw, y_raw)
-            if len(x) >= 2:
-                return x, y
-
-        # 2) Split dcswp-* blocks
-        dc_offsets = []
-        vouts = []
-        sweep_keys = [k for k in results.keys() if k.startswith('dcswp-')]
-        sweep_keys.sort()
-
-        for k in sweep_keys:
-            res_dict = results.get(k)
-            if not isinstance(res_dict, dict):
-                continue
-
-            if 'Voutp' in res_dict and 'Voutn' in res_dict:
-                y_val = np.asarray(res_dict['Voutp']) - np.asarray(res_dict['Voutn'])
-            elif 'Vout' in res_dict:
-                y_val = np.asarray(res_dict['Vout'])
-            elif 'Voutp' in res_dict:
-                y_val = np.asarray(res_dict['Voutp'])
-            else:
-                continue
-
-            y_flat = np.ravel(y_val)
-            if len(y_flat) == 0:
-                continue
-            y_scalar = float(np.real(y_flat[0]))
-
-            x_scalar = None
-            if 'dc_offset' in res_dict:
-                try:
-                    x_scalar = float(np.ravel(res_dict['dc_offset'])[0])
-                except Exception:
-                    x_scalar = None
-            if x_scalar is None and 'sweep_values' in res_dict:
-                try:
-                    x_scalar = float(np.ravel(res_dict['sweep_values'])[0])
-                except Exception:
-                    x_scalar = None
-            if x_scalar is None:
-                # Last-resort fallback keeps legacy behavior for existing datasets.
-                try:
-                    parts = k.split('_')[0].split('-')
-                    num = int(parts[1]) if len(parts) > 1 else None
-                    if num is not None:
-                        x_scalar = -0.1 + (num * 0.001)
-                except Exception:
-                    x_scalar = None
-
-            if x_scalar is not None:
-                dc_offsets.append(x_scalar)
-                vouts.append(y_scalar)
-
-        if len(dc_offsets) >= 2:
-            x, y = _sanitize_xy(dc_offsets, vouts)
             if len(x) >= 2:
                 return x, y
 
@@ -505,486 +600,388 @@ class SpecCalc(object):
     @staticmethod
     def find_estimated_area(params):
         """
-        Estimate total on-chip area (um^2) from sizing parameters.
-
-        This is a first-order proxy combining:
-        - transistor footprint from gate length/fins and node pitch,
-        - capacitor area from capacitance density,
-        - resistor area from area-per-ohm coefficient.
+        Estimate total on-chip area in um^2 from sizing parameters.
         """
         if not isinstance(params, dict) or len(params) == 0:
             return None
 
+        # node-specific design rules (cpp: contacted poly pitch, pitch: fin/metal pitch)
+        # cap density in f/um^2, res coeff in um^2/ohm
         node_map = {
-            7:  {'cpp': 54e-9,  'pitch': 22e-9, 'cap_density': 25e-15 / 1e-12, 'res_coeff': (50e-9)**2  / 600},
-            10: {'cpp': 66e-9,  'pitch': 28e-9, 'cap_density': 18e-15 / 1e-12, 'res_coeff': (80e-9)**2  / 400},
-            14: {'cpp': 78e-9,  'pitch': 32e-9, 'cap_density': 12e-15 / 1e-12, 'res_coeff': (100e-9)**2 / 250},
-            16: {'cpp': 90e-9,  'pitch': 42e-9, 'cap_density': 10e-15 / 1e-12, 'res_coeff': (130e-9)**2 / 200},
-            20: {'cpp': 110e-9, 'pitch': 60e-9, 'cap_density':  8e-15 / 1e-12, 'res_coeff': (200e-9)**2 / 150},
+            7: {
+                'LSTP': {'cpp': 54e-9, 'pitch': 27e-9, 'cap_density': 2.0e-15 / 1e-12, 'res_coeff': 400},
+                'HP':   {'cpp': 57e-9, 'pitch': 30e-9, 'cap_density': 2.0e-15 / 1e-12, 'res_coeff': 400}
+                # source: ASAP7, AMD
+            },
+            10: {
+                'LSTP': {'cpp': 54e-9, 'pitch': 34e-9, 'cap_density': 1.8e-15 / 1e-12, 'res_coeff': 300},
+                'HP':   {'cpp': 54e-9, 'pitch': 44e-9, 'cap_density': 1.8e-15 / 1e-12, 'res_coeff': 300}
+                # source: Intel
+            },
+            14: {
+                'LSTP': {'cpp': 78e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200},
+                'HP':   {'cpp': 78e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200}
+                # source: AMD
+            },
+            16: {
+                'LSTP': {'cpp': 90e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200},
+                'HP':   {'cpp': 90e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200}
+                # source: TSMC
+            },
+            20: {
+                'LSTP': {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 1.2e-15 / 1e-12, 'res_coeff': 150},
+                'HP':   {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 1.2e-15 / 1e-12, 'res_coeff': 150}
+                # source: IBM 
+            }
         }
-        scale_factor = 3.0
+                
+        # standard analog layout overhead
+        layout_overhead_factor = 3.0
 
         try:
-            tech_node = int(params.get('fet_num', 10))
+            # default to 7nm if not specified
+            tech_node = int(params.get('fet_num'))
         except Exception:
-            tech_node = 10
-        tech = node_map.get(tech_node, node_map[10])
+            tech_node = 7
 
+        tech_options = node_map.get(tech_node, node_map[7])
+        is_hp = bool(params.get('is_hp', False))
+        tech = tech_options['HP'] if is_hp else tech_options['LSTP']
         area_m2 = 0.0
 
-        # Active device footprint.
+        # 1. active device footprint
         for key, val in params.items():
             if not key.startswith('nA'):
                 continue
-            width_key = 'nB' + key[2:]
-            if width_key not in params:
-                continue
-            try:
-                l_eff = max(float(val), tech['cpp'])
-                width = float(params[width_key]) * tech['pitch']
-                area_m2 += l_eff * width
-            except Exception:
-                continue
+            
+            suffix = key[2:]
+            width_key = 'nB' + suffix
+            
+            if width_key in params:
+                try:
+                    # x-dimension: gate length padded by one cpp
+                    l_gate = float(val)
+                    x_dim = max(l_gate, tech['cpp']) + tech['cpp']
+                    
+                    # y-dimension: (fins + 1) * fin pitch
+                    num_fins = max(int(params[width_key]), 1)
+                    y_dim = (num_fins + 1) * tech['pitch']
+                    
+                    area_m2 += (x_dim * y_dim)
+                except (ValueError, TypeError):
+                    continue
 
-        area_m2 *= scale_factor
+        # apply global layout overhead to active area
+        area_m2 *= layout_overhead_factor
 
-        # Passive devices.
+        # 2. passive devices
         cap_density = tech['cap_density']
         res_area_coeff = tech['res_coeff']
+        
         for key, val in params.items():
-            if key.startswith('nC') and val > 0:
-                try:
-                    area_m2 += float(val) / cap_density
-                except Exception:
-                    pass
-            elif key.startswith('nR') and val > 0:
-                try:
-                    area_m2 += float(val) * res_area_coeff
-                except Exception:
-                    pass
+            try:
+                num_val = float(val)
+                if num_val <= 0: continue
+                
+                # nC_x = capacitance (f)
+                if key.startswith('nC'):
+                    area_m2 += num_val / cap_density
+                    
+                # nR_x = resistance (ohm)
+                elif key.startswith('nR'):
+                    area_m2 += num_val * res_area_coeff
+            except (ValueError, TypeError):
+                continue
 
+        # return as um^2
         return float(area_m2 * 1e12)
 
     @staticmethod
-    def find_vos(results, vcm=None):
+    def find_vos(results, vcm=0.0):
         """
-        Find input offset (Vos) from DC sweep by locating where the output
-        crosses the target level.
-        - Differential: target = 0  (Voutp - Voutn should cross zero)
-        - Single-ended: target = vcm (Vout should cross vcm at the balance point)
-        Returns Vos (float, the dc_offset input value) or None.
+        Find input-referred offset (vos) in volts.
         """
         dc_offsets, vouts = SpecCalc.extract_dc_sweep(results)
-        if len(dc_offsets) < 4:
+        if dc_offsets is None or vouts is None or len(dc_offsets) < 2:
             return None
 
-        target = float(vcm) if vcm is not None else 0.0
-        try:
-            y_shift = np.asarray(vouts) - target
+        # treat output axis as volts
+        vouts = np.asarray(vouts, dtype=float)
 
-            # Exact/near-exact crossing on sampled points.
-            best_idx = int(np.argmin(np.abs(y_shift)))
-            if np.isclose(y_shift[best_idx], 0.0, atol=1e-12):
-                return float(dc_offsets[best_idx])
+        # convert dc offset axis from mv to v
+        dc_offsets = np.asarray(dc_offsets, dtype=float) / 1000.0
 
-            # Build all sign-change brackets, then pick the one nearest dc_offset=0.
-            bracket_idxs = np.where(y_shift[:-1] * y_shift[1:] < 0)[0]
-            if len(bracket_idxs) == 0:
-                return None
+        # normalize vcm target to volts
+        if vcm is not None:
+            target = float(vcm)
+            if target > 2.0: 
+                target = target / 1000.0
+        else:
+            target = 0.0
 
-            mids = 0.5 * (dc_offsets[bracket_idxs] + dc_offsets[bracket_idxs + 1])
-            chosen = int(bracket_idxs[int(np.argmin(np.abs(mids)))])
-            x_lo, x_hi = float(dc_offsets[chosen]), float(dc_offsets[chosen + 1])
+        # shift for zero-crossing detection
+        y_shifted = vouts - target
+        
+        # locate sign change
+        sign_changes = np.where(np.diff(np.sign(y_shifted)) != 0)[0]
 
-            pchip = interp.PchipInterpolator(dc_offsets, y_shift, extrapolate=False)
-            return float(sciopt.brentq(lambda x: float(pchip(x)), x_lo, x_hi))
-        except Exception:
-            # Robust fallback: linear interpolation on nearest bracket.
-            try:
-                y_shift = np.asarray(vouts) - target
-                bracket_idxs = np.where(y_shift[:-1] * y_shift[1:] < 0)[0]
-                if len(bracket_idxs) == 0:
-                    return None
-                mids = 0.5 * (dc_offsets[bracket_idxs] + dc_offsets[bracket_idxs + 1])
-                chosen = int(bracket_idxs[int(np.argmin(np.abs(mids)))])
-                x1, x2 = float(dc_offsets[chosen]), float(dc_offsets[chosen + 1])
-                y1, y2 = float(y_shift[chosen]), float(y_shift[chosen + 1])
-                if np.isclose(y2, y1):
-                    return None
-                return float(x1 + (x2 - x1) * (-y1) / (y2 - y1))
-            except Exception:
-                return None
+        if len(sign_changes) == 0:
+            return None
+
+        # linear interpolation at crossing nearest zero offset
+        idx = sign_changes[np.argmin(np.abs(dc_offsets[sign_changes]))]
+        
+        x1, x2 = dc_offsets[idx], dc_offsets[idx+1]
+        y1, y2 = y_shifted[idx], y_shifted[idx+1]
+
+        vos = x1 - y1 * (x2 - x1) / (y2 - y1)
+
+        return float(vos)
 
     @staticmethod
-    def find_output_voltage_swing(results, vcm=None, allowed_deviation_pct=10.0):
+    def find_output_voltage_swing(results, vcm=0.0, allowed_deviation_pct=10.0):
+        """
+        Find output swing boundaries in volts using smoothed slope compression.
+        S++ Tier: Uses a center-region max gain search to handle systematic offset
+        and binary-searches for the contiguous high-gain band.
+        """
         dc_offsets, vouts = SpecCalc.extract_dc_sweep(results)
-        if len(dc_offsets) < 6:
-            return None
+        if dc_offsets is None or vouts is None or len(dc_offsets) < 10:
+            return None, None
 
         try:
-            x = np.asarray(dc_offsets, dtype=float)
+            # 1. Standardize units (x: mV -> V, y: V)
+            x = np.asarray(dc_offsets, dtype=float) / 1000.0
             y = np.asarray(vouts, dtype=float)
+
+            # 2. Find VOS for region centering
+            vos = SpecCalc.find_vos(results, vcm)
+            if vos is None:
+                return None, None
+
+            # 3. Fit PCHIP and calculate derivative
+            # PCHIP is used to ensure the derivative doesn't have artificial ringing
             pchip = interp.PchipInterpolator(x, y, extrapolate=False)
-            slope = pchip.derivative()
+            slope_func = pchip.derivative()
 
-            # Anchor at the measured operating point when available.
-            x_center = SpecCalc.find_vos(results, vcm=vcm)
-            if x_center is None or x_center < x[0] or x_center > x[-1]:
-                x_center = float(x[int(np.argmin(np.abs(x)))])
-
-            slope_center = float(slope(x_center))
-            tol = abs(slope_center) * (float(allowed_deviation_pct) / 100.0)
-            if tol <= 0:
-                grad = np.gradient(y, x)
-                tol = max(1e-12, 0.1 * np.max(np.abs(grad)))
-
-            # Dense sampling keeps bounds stable against sweep step size.
-            x_fine = np.linspace(x[0], x[-1], max(2000, len(x) * 20))
-            slope_fine = slope(x_fine)
-            err = np.abs(slope_fine - slope_center) - tol
-            in_band = err <= 0.0
-
-            center_idx = int(np.argmin(np.abs(x_fine - x_center)))
-            if not in_band[center_idx]:
-                return 0.0
-
-            left_idx = center_idx
-            while left_idx > 0 and in_band[left_idx - 1]:
-                left_idx -= 1
-            right_idx = center_idx
-            while right_idx < len(x_fine) - 1 and in_band[right_idx + 1]:
-                right_idx += 1
-
-            # Refine each boundary by linear interpolation on err=0 crossing.
-            x_left = x_fine[left_idx]
-            if left_idx > 0:
-                e0, e1 = err[left_idx - 1], err[left_idx]
-                x0, x1 = x_fine[left_idx - 1], x_fine[left_idx]
-                if e0 > 0 and e1 <= 0 and not np.isclose(e0, e1):
-                    x_left = x0 + (x1 - x0) * (-e0) / (e1 - e0)
-
-            x_right = x_fine[right_idx]
-            if right_idx < len(x_fine) - 1:
-                e0, e1 = err[right_idx], err[right_idx + 1]
-                x0, x1 = x_fine[right_idx], x_fine[right_idx + 1]
-                if e0 <= 0 and e1 > 0 and not np.isclose(e0, e1):
-                    x_right = x0 + (x1 - x0) * (-e0) / (e1 - e0)
-
-            y_left = float(pchip(x_left))
-            y_right = float(pchip(x_right))
-            return float(max(0.0, abs(y_right - y_left)))
-        except Exception:
-            return None
-
-    @staticmethod
-    def _find_ugbw_freq_idx(xf_results):
-        """
-        Find the frequency index where the main AC response crosses 0dB (gain = 1.0).
-        Uses linear interpolation to find the exact crossing point.
-        Returns fractional index (float), or 0 (fallback to DC) if not found.
-        """
-        if not isinstance(xf_results, dict):
-            return 0.0
-
-        # Extract main AC gain (differential output or single-ended)
-        gain_response = None
-        for key in ('Vout', 'Voutp', 'out', 'V0'):
-            if key in xf_results:
-                candidate = xf_results[key]
-                if not isinstance(candidate, dict) and hasattr(candidate, '__len__'):
-                    if len(candidate) > 4:  # Sanity check
-                        gain_response = candidate
-                        break
-
-        if gain_response is None:
-            return 0.0  # Fallback to DC
-
-        try:
-            # Convert to magnitude array and find 0dB crossing
-            gain_mag = np.abs(np.asarray(gain_response, dtype=complex))
-            # Find first crossing where gain drops from >= 1.0 to < 1.0
-            crossings = np.where((gain_mag[:-1] >= 1.0) & (gain_mag[1:] < 1.0))[0]
-            if len(crossings) == 0:
-                return 0.0
+            # 4. Establish baseline Gain (Peak Gain Search)
+            # We look for the maximum slope in the central 40% of the sweep
+            # to handle designs where peak gain isn't perfectly at VOS.
+            x_min, x_max = np.min(x), np.max(x)
+            x_range = x_max - x_min
+            center_mask = (x > (x_min + 0.3 * x_range)) & (x < (x_max - 0.3 * x_range))
             
-            i = int(crossings[0])
-            g0, g1 = float(gain_mag[i]), float(gain_mag[i + 1])
-            
-            # Linear interpolation: find fractional position where gain = 1.0
-            # frac = 0 means at index i, frac = 1 means at index i+1
-            if not np.isclose(g0, g1):
-                frac = (1.0 - g0) / (g1 - g0)
-                # Clamp to [0, 1] to avoid extrapolation
-                frac = max(0.0, min(1.0, frac))
-                return float(i + frac)
+            if np.any(center_mask):
+                # Sample the center region densely to find the true peak
+                x_center = np.linspace(x[center_mask][0], x[center_mask][-1], 500)
+                slope_peak = np.max(np.abs(slope_func(x_center)))
             else:
-                return float(i)
+                slope_peak = np.abs(float(slope_func(vos)))
+
+            # 5. Define gain threshold
+            # We find the boundaries where gain drops to (1 - deviation) * peak_gain
+            threshold = slope_peak * (1.0 - float(allowed_deviation_pct) / 100.0)
+
+            # 6. Dense sampling to locate the contiguous band
+            # We use a high-resolution grid to ensure precision
+            x_fine = np.linspace(x_min, x_max, 5000)
+            slopes = np.abs(slope_func(x_fine))
+            in_band = slopes >= threshold
+
+            # 7. Identify the specific contiguous band containing VOS
+            vos_idx = np.argmin(np.abs(x_fine - vos))
+            if not in_band[vos_idx]:
+                # If even VOS is out of band, the circuit is functionally broken
+                return None, None
+
+            # Expand left and right until the gain drops below threshold
+            left_side = np.where(~in_band[:vos_idx])[0]
+            right_side = np.where(~in_band[vos_idx:])[0]
+
+            l_idx = left_side[-1] + 1 if len(left_side) > 0 else 0
+            r_idx = (right_side[0] + vos_idx - 1) if len(right_side) > 0 else len(x_fine) - 1
+
+            # 8. Precise Linear Boundary Interpolation
+            # This extracts the exact X value where the threshold is crossed
+            x_left, x_right = x_fine[l_idx], x_fine[r_idx]
+
+            if l_idx > 0:
+                s0, s1 = slopes[l_idx - 1], slopes[l_idx]
+                if not np.isclose(s1, s0):
+                    x_left = x_fine[l_idx-1] + (threshold - s0) * (x_fine[l_idx] - x_fine[l_idx-1]) / (s1 - s0)
+
+            if r_idx < len(x_fine) - 1:
+                s0, s1 = slopes[r_idx], slopes[r_idx + 1]
+                if not np.isclose(s1, s0):
+                    x_right = x_fine[r_idx] + (threshold - s0) * (x_fine[r_idx+1] - x_fine[r_idx]) / (s1 - s0)
+
+            # 9. Map input boundaries to output voltages
+            v_low = float(pchip(x_left))
+            v_high = float(pchip(x_right))
+
+            # Return sorted (Min Swing, Max Swing)
+            return tuple(sorted((v_low, v_high)))
+
         except Exception:
-            return 0.0
+            return None, None
 
     @staticmethod
-    def find_psrr(xf_results, dc_gain_lin):
-        if dc_gain_lin is None or dc_gain_lin == 0 or xf_results is None:
+    def find_psrr(xf_results, gain_ol_lin):
+        """
+        Calculate Exact Open-Loop PSRR from Unity-Gain XF results.
+        Formula: PSRR_ol = A_ol / (A_xf * (1 + A_ol))
+        """
+        if xf_results is None or gain_ol_lin is None:
             return None
+        try:
+            # A_ol is the raw linear differential gain (V/V)
+            ad = float(np.abs(gain_ol_lin))
+            
+            # A_xf is the closed-loop leakage measured from supply (V0) to output
+            a_cl_leakage = float(np.abs(np.ravel(xf_results.get('V0'))[0]))
 
-        def _find_source_tf(xf, source_name):
-            # Direct mapping
-            if source_name in xf:
-                return xf[source_name]
-            # Nested mapping
-            for v in xf.values():
-                if isinstance(v, dict) and source_name in v:
-                    return v[source_name]
+            # Handle the "Infinite Rejection" numerical floor
+            if a_cl_leakage <= 1e-18:
+                return 160.0
+            
+            # The Exact Ratio: Difference Gain / True Open-Loop Supply Gain
+            # A_ol_supply = a_cl_leakage * (1 + ad)
+            psrr_linear = ad / (a_cl_leakage * (1 + ad))
+            
+            psrr_db = float(20 * np.log10(psrr_linear))
+            return float(np.clip(psrr_db, -20.0, 160.0))
+        except (ZeroDivisionError, ValueError, TypeError):
             return None
-
-        tf_vdd = _find_source_tf(xf_results, 'V0')
-        if tf_vdd is None:
-            # Try common alternative names
-            tf_vdd = _find_source_tf(xf_results, 'VDD')
-
-        if tf_vdd is not None:
-            try:
-                # Convert transfer function to array
-                tf_vdd_arr = np.asarray(tf_vdd, dtype=complex)
-                if len(tf_vdd_arr) == 0:
-                    return None
-
-                # Get the main AC gain array to find UGBW point
-                gain_response = None
-                for key in ('Vout', 'Voutp', 'out', 'V0'):
-                    if key in xf_results and not isinstance(xf_results[key], dict):
-                        candidate = xf_results[key]
-                        if len(candidate) == len(tf_vdd_arr):
-                            gain_response = candidate
-                            break
-
-                # Evaluate at UGBW if we can find it, otherwise fallback to DC
-                eval_idx = 0.0
-                gain_at_ugbw = dc_gain_lin
-                
-                if gain_response is not None:
-                    try:
-                        gain_mag = np.abs(np.asarray(gain_response, dtype=complex))
-                        crossings = np.where((gain_mag[:-1] >= 1.0) & (gain_mag[1:] < 1.0))[0]
-                        if len(crossings) > 0:
-                            i = int(crossings[0])
-                            g0, g1 = float(gain_mag[i]), float(gain_mag[i + 1])
-                            
-                            # Linear interpolation for fractional index
-                            if not np.isclose(g0, g1):
-                                frac = (1.0 - g0) / (g1 - g0)
-                                frac = max(0.0, min(1.0, frac))
-                                eval_idx = i + frac
-                            else:
-                                eval_idx = float(i)
-                            
-                            # Interpolate gain at exact crossing point
-                            # For uniformly-sampled frequency sweep, linear interp is appropriate
-                            gain_at_ugbw = 1.0  # At crossing point, gain = 1.0 by definition
-                        else:
-                            gain_at_ugbw = float(np.abs(gain_response[0]))
-                    except Exception:
-                        gain_at_ugbw = dc_gain_lin
-
-                # Round fractional index to nearest integer for array access
-                eval_idx_int = int(np.round(eval_idx))
-                # Ensure index is valid
-                if eval_idx_int >= len(tf_vdd_arr):
-                    eval_idx_int = 0
-
-                # Interpolate transfer function at fractional index if available
-                if eval_idx > 0 and eval_idx < len(tf_vdd_arr) - 1 and not np.isclose(eval_idx, np.round(eval_idx)):
-                    # Linear interpolation for fractional index
-                    i_lo = int(np.floor(eval_idx))
-                    i_hi = int(np.ceil(eval_idx))
-                    frac = eval_idx - i_lo
-                    tf_vdd_val = float(np.abs(
-                        (1.0 - frac) * tf_vdd_arr[i_lo] + frac * tf_vdd_arr[i_hi]
-                    ))
-                else:
-                    tf_vdd_val = float(np.abs(tf_vdd_arr[eval_idx_int]))
-
-                if tf_vdd_val > 1e-12:
-                    return float(20 * np.log10(gain_at_ugbw / tf_vdd_val))
-                else:
-                    return 0.0
-            except Exception:
-                return None
-        return None
 
     @staticmethod
-    def find_cmrr_xf(xf_results, dc_gain_lin, source_names=None):
-        if dc_gain_lin is None or dc_gain_lin == 0 or xf_results is None:
+    def find_cmrr(xf_results, gain_ol_lin):
+        """
+        Calculate Exact Open-Loop CMRR from Unity-Gain XF results.
+        Formula: CMRR_ol = A_ol / (A_xf * (1 + A_ol))
+        """
+        if xf_results is None or gain_ol_lin is None:
+            return None
+        try:
+            ad = float(np.abs(gain_ol_lin))
+            
+            # Closed-loop leakage from common-mode source (V1) to output
+            a_cl_leakage = float(np.abs(np.ravel(xf_results.get('V1'))[0]))
+
+            if a_cl_leakage <= 1e-18:
+                return 160.0
+            
+            cmrr_linear = ad / (a_cl_leakage * (1 + ad))
+            
+            cmrr_db = float(20 * np.log10(cmrr_linear))
+            return float(np.clip(cmrr_db, -20.0, 160.0))
+        except (ZeroDivisionError, ValueError, TypeError):
             return None
 
-        def _find_source_tf(xf, source_name):
-            if source_name in xf:
-                return xf[source_name]
-            for v in xf.values():
-                if isinstance(v, dict) and source_name in v:
-                    return v[source_name]
-            return None
-
-        if source_names is None:
-            source_names = ('V1', 'VCM')
-
-        tf_cm = None
-        for source_name in source_names:
-            tf_cm = _find_source_tf(xf_results, source_name)
-            if tf_cm is not None:
-                break
-
-        if tf_cm is not None:
-            try:
-                # Convert transfer function to array
-                tf_cm_arr = np.asarray(tf_cm, dtype=complex)
-                if len(tf_cm_arr) == 0:
-                    return None
-
-                # Get the main AC gain array to find UGBW point
-                gain_response = None
-                for key in ('Vout', 'Voutp', 'out', 'V0'):
-                    if key in xf_results and not isinstance(xf_results[key], dict):
-                        candidate = xf_results[key]
-                        if len(candidate) == len(tf_cm_arr):
-                            gain_response = candidate
-                            break
-
-                # Evaluate at UGBW if we can find it, otherwise fallback to DC
-                eval_idx = 0.0
-                gain_at_ugbw = dc_gain_lin
-                
-                if gain_response is not None:
-                    try:
-                        gain_mag = np.abs(np.asarray(gain_response, dtype=complex))
-                        crossings = np.where((gain_mag[:-1] >= 1.0) & (gain_mag[1:] < 1.0))[0]
-                        if len(crossings) > 0:
-                            i = int(crossings[0])
-                            g0, g1 = float(gain_mag[i]), float(gain_mag[i + 1])
-                            
-                            # Linear interpolation for fractional index
-                            if not np.isclose(g0, g1):
-                                frac = (1.0 - g0) / (g1 - g0)
-                                frac = max(0.0, min(1.0, frac))
-                                eval_idx = i + frac
-                            else:
-                                eval_idx = float(i)
-                            
-                            # Interpolate gain at exact crossing point
-                            # For uniformly-sampled frequency sweep, at crossing point gain = 1.0
-                            gain_at_ugbw = 1.0  # At crossing point, gain = 1.0 by definition
-                        else:
-                            gain_at_ugbw = float(np.abs(gain_response[0]))
-                    except Exception:
-                        gain_at_ugbw = dc_gain_lin
-
-                # Round fractional index to nearest integer for array access
-                eval_idx_int = int(np.round(eval_idx))
-                # Ensure index is valid
-                if eval_idx_int >= len(tf_cm_arr):
-                    eval_idx_int = 0
-
-                # Interpolate transfer function at fractional index if available
-                if eval_idx > 0 and eval_idx < len(tf_cm_arr) - 1 and not np.isclose(eval_idx, np.round(eval_idx)):
-                    # Linear interpolation for fractional index
-                    i_lo = int(np.floor(eval_idx))
-                    i_hi = int(np.ceil(eval_idx))
-                    frac = eval_idx - i_lo
-                    tf_cm_val = float(np.abs(
-                        (1.0 - frac) * tf_cm_arr[i_lo] + frac * tf_cm_arr[i_hi]
-                    ))
-                else:
-                    tf_cm_val = float(np.abs(tf_cm_arr[eval_idx_int]))
-
-                if tf_cm_val > 1e-12:
-                    return float(20 * np.log10(gain_at_ugbw / tf_cm_val))
-                else:
-                    return 0.0
-            except Exception:
-                return None
-        return None
-
+    
     @staticmethod
     def find_thd(thd_results):
+        """
+        Extract total harmonic distortion (THD) in dBc.
+        Strictly targets Vout_diff (Differential) with a fallback to Voutp (Single-Ended).
+        """
         if thd_results is None:
             return None
+        
         sweep_vars = thd_results.get('sweep_vars', [])
         sweep_values = thd_results.get('sweep_values', [])
-        is_pss = False
-        if 'harmonic' in sweep_vars or 'freq' in sweep_vars:
-            is_pss = True
-        elif len(sweep_values) > 1 and sweep_values[1] > 1e6:
-            is_pss = True
+        is_freq_domain = any(k in sweep_vars for k in ['harmonic', 'freq'])
 
-        # Choose differential or single-ended signal
-        v_p = thd_results.get('Voutp')
-        v_n = thd_results.get('Voutn')
-        v_sig = thd_results.get('Vout')
-        if v_p is not None:
-            v_p = np.array(v_p)
-            if v_n is not None and len(v_n) == len(v_p):
-                v_sig = v_p - np.array(v_n)
-            else:
-                v_sig = v_p
-        elif v_sig is not None:
-            v_sig = np.array(v_sig)
-        else:
+        # 1. Signal Selection: Strict Two-Case Ladder
+        v_sig = None
+        if 'Vout_diff' in thd_results:
+            # Case 1: Differential Output (Primary)
+            v_sig = SpecCalc._coerce_signal_vector(thd_results['Vout_diff'])
+        elif 'Voutp' in thd_results:
+            # Case 2: Single-Ended Output (Secondary)
+            v_sig = SpecCalc._coerce_signal_vector(thd_results['Voutp'])
+
+        if v_sig is None or len(v_sig) == 0:
             return None
 
-        if is_pss:
+        # 2. Spectrum Processing
+        if is_freq_domain:
             v_mag = np.abs(v_sig)
-            freqs = np.array(sweep_values)
-            v_mag[0] = 0.0
-            fund_idx = np.argmax(v_mag)
+            freqs = np.ravel(np.asarray(sweep_values, dtype=float))
+            
+            # Identify Fundamental (Ignore DC/Low-freq noise below 1Hz)
+            pos_mask = freqs > 1.0 
+            if not np.any(pos_mask): return None
+            
+            fund_freq = np.min(freqs[pos_mask])
+            fund_idx = np.argmin(np.abs(freqs - fund_freq))
             fund_mag = v_mag[fund_idx]
-            fund_freq = freqs[fund_idx]
-            if fund_mag < 1e-12:
-                return None
+            
+            if fund_mag < 1e-12: return None
+
+            # Industry Standard: Sum the first 9 harmonics (2nd through 10th)
             harm_power = 0.0
             for i in range(2, 11):
-                target_freq = fund_freq * i
-                matches = np.where(np.isclose(freqs, target_freq, rtol=1e-3))[0]
-                if len(matches) > 0:
-                    harm_power += v_mag[matches[0]]**2
+                target_f = fund_freq * i
+                idx = np.argmin(np.abs(freqs - target_f))
+                if np.isclose(freqs[idx], target_f, rtol=0.01):
+                    harm_power += v_mag[idx]**2
+                    
         else:
-            time = thd_results.get('time', [])
-            if (time is None or len(time) == 0) and 'sweep_values' in thd_results:
-                time = thd_results['sweep_values']
-            time = np.array(time)
-            if len(time) != len(v_sig):
-                min_len = min(len(time), len(v_sig))
-                time = time[:min_len]
-                v_sig = v_sig[:min_len]
-            time_clean, unique_indices = np.unique(time, return_index=True)
-            v_clean = v_sig[unique_indices]
-            n = len(v_clean)
-            if n < 10:
+            # TRANSIENT PATH (Time-Domain to FFT)
+            time = np.asarray(thd_results.get('time', thd_results.get('sweep_values', [])))
+            if len(time) < 10:
                 return None
-            t_uniform = np.linspace(time_clean[0], time_clean[-1], num=n)
-            dt = t_uniform[1] - t_uniform[0]
-            interpolator = interp.interp1d(time_clean, v_clean, kind='cubic', fill_value="extrapolate")
-            v_uniform = interpolator(t_uniform)
-            window = np.hanning(n)
+            
+            # S-Tier Scrubber: Enforce strictly increasing time for FFT integrity
+            time, uniq_idx = np.unique(time, return_index=True)
+            if len(time) < 10:
+                return None
+            v_clean = v_sig[uniq_idx]
+            
+            # Settling Guard: Use only the second half of the simulation
+            t_start = max(time) * 0.5
+            steady_mask = time >= t_start
+            t_steady, v_steady = time[steady_mask], v_clean[steady_mask]
+            if len(t_steady) < 8:
+                return None
+            if t_steady[-1] <= t_steady[0]:
+                return None
+            
+            # Resample to 2^N points for optimal FFT performance
+            num_samples = 2**int(np.log2(len(v_steady)))
+            if num_samples < 8:
+                return None
+            t_uniform = np.linspace(t_steady[0], t_steady[-1], num_samples)
+            v_uniform = np.interp(t_uniform, t_steady, v_steady)
+            
+            # Apply Blackman-Harris window for high-dynamic range distortion detection
+            window = np.blackman(num_samples)
             v_windowed = v_uniform * window
-            fft_vals = np.fft.rfft(v_windowed)
-            fft_mag = np.abs(fft_vals) / (n / 2.0)
-            freqs = np.fft.rfftfreq(n, d=dt)
-            fft_mag[0] = 0.0
-            fund_idx = np.argmax(fft_mag)
+            
+            # FFT with Amplitude Correction for windowing loss
+            fft_data = np.fft.rfft(v_windowed)
+            fft_mag = np.abs(fft_data) * (2.0 / np.sum(window))
+            freqs = np.fft.rfftfreq(num_samples, d=(t_uniform[1] - t_uniform[0]))
+            
+            # Detect Fundamental (skipping DC at index 0)
+            fund_idx = np.argmax(fft_mag[1:]) + 1 
             fund_mag = fft_mag[fund_idx]
             fund_freq = freqs[fund_idx]
-            if fund_mag < 1e-12:
-                return None
+            
+            if fund_mag < 1e-12: return None
+            
+            # Harmonic Summation with a 2% frequency window to catch spectral leakage
             harm_power = 0.0
             for i in range(2, 11):
-                target_freq = fund_freq * i
-                window_mask = (freqs >= target_freq * 0.98) & (freqs <= target_freq * 1.02)
-                if np.any(window_mask):
-                    harm_power += np.max(fft_mag[window_mask])**2
+                target_f = fund_freq * i
+                h_mask = (freqs >= target_f * 0.98) & (freqs <= target_f * 1.02)
+                if np.any(h_mask):
+                    harm_power += np.max(fft_mag[h_mask])**2
 
-        if harm_power <= 0:
-            return -120.0
-        thd_lin = np.sqrt(harm_power) / fund_mag
-        if thd_lin <= 1e-6:
-            return -120.0
-        return float(20 * np.log10(thd_lin))
+        # 3. Final THD Calculation
+        # Result is in dBc (Decibels relative to the carrier/fundamental)
+        total_harm_rms = np.sqrt(max(harm_power, 0.0))
+        thd_lin = total_harm_rms / fund_mag
+        
+        # Floor to -160 dBc to maintain numerical stability in the Bayesian Optimizer
+        return float(20 * np.log10(max(thd_lin, 1e-8)))
