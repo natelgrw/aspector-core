@@ -1,3 +1,11 @@
+Version **1.5.1**
+
+Date Released: **04/09/2026**
+
+- Sobol and extraction pipeline upgrades
+- Stochastic spec execution
+- Final netlist aggregation
+
 Version **1.5.0**
 
 Date Released: **03/22/2026**

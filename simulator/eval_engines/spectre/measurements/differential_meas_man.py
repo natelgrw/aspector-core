@@ -11,6 +11,7 @@ for differential op-amp simulations.
 from simulator.eval_engines.spectre.core import EvaluationEngine
 import numpy as np
 from simulator.eval_engines.spectre.measurements.spec_functions import SpecCalc
+from simulator.eval_engines.utils.design_reps import extract_sizing_map
 
 
 # ===== Differential Op-Amp Measurement Manager ===== #
@@ -29,6 +30,14 @@ class OpampMeasMan(EvaluationEngine):
     def __init__(self, config):
 
         EvaluationEngine.__init__(self, config)
+        self.size_map = {}
+        try:
+            tb_cfg = self.measurement_specs.get('testbenches', {}).get('ac_dc', {})
+            netlist_path = tb_cfg.get('netlist_template')
+            if netlist_path:
+                self.size_map = extract_sizing_map(netlist_path)
+        except Exception:
+            self.size_map = {}
 
     def process_ac(self, results, params):
         """
@@ -44,7 +53,7 @@ class OpampMeasMan(EvaluationEngine):
         --------
         dict: Dictionary of extracted performance specifications.
         """
-        return ACTB.process_ac(results, params)
+        return ACTB.process_ac(results, params, self.size_map)
 
     def get_specs(self, results_dict, params):
         """
@@ -83,7 +92,7 @@ class ACTB:
     """
 
     @classmethod
-    def process_ac(cls, results, params):
+    def process_ac(cls, results, params, size_map=None):
         """
         Process AC analysis results to extract performance specifications for a differential op-amp.
 
@@ -99,6 +108,9 @@ class ACTB:
         if not isinstance(results, dict):
             return {}
 
+        if not isinstance(size_map, dict):
+            size_map = {}
+
         # individual simulation results
         ac_result_se    = results.get('stb_sim')
         dc_results      = results.get('dcOp_sim')
@@ -111,45 +123,75 @@ class ACTB:
         # initializing all spec variables
         vos_v = gain_ol_dc_db = gain_ol_lin = ugbw_hz = pm_deg = None
         estimated_area_um2 = power_w = cmrr_dc_db = psrr_dc_db = None
-        integrated_noise_vrms = slew_rate_v_us = settle_time_ns = thd_db = None
+        v_cm_ctrl = None
+        integrated_noise_vrms = slew_rate_v_us = settle_time_small_ns = settle_time_large_ns = thd_db = None
         valid = False
         stability_valid = False
 
-        # initialization of dcOp specs for each transistor
-        mm_names = []
-        ids_MM = {}
-        gm_MM = {}
-        gds_MM = {}
-        vth_MM = {}
-        vdsat_MM = {}
-        vgs_MM = {}
-        vds_MM = {}
-        cgg_MM = {}
-        cgs_MM = {}
-        cdd_MM = {}
-        cgd_MM = {}
-        css_MM = {}
-        region_MM = {}
+        # pre-zero op-point dicts from size_map and available results (works even if dcOp fails)
+        mm_from_size = [comp for comp in size_map.keys() if isinstance(comp, str) and comp.startswith('MM')]
+        mm_from_dc = [comp.split(':')[0] for comp in dc_results.keys() if isinstance(comp, str) and comp.startswith('MM')] if isinstance(dc_results, dict) else []
+        mm_from_noise = [comp for comp in noise_results.keys() if isinstance(comp, str) and comp.startswith('MM')] if isinstance(noise_results, dict) else []
+        mm_names = sorted(set(mm_from_size) | set(mm_from_dc) | set(mm_from_noise))
+        ids_MM = {mm: np.nan for mm in mm_names}
+        gm_MM = {mm: np.nan for mm in mm_names}
+        gds_MM = {mm: np.nan for mm in mm_names}
+        vth_MM = {mm: np.nan for mm in mm_names}
+        vdsat_MM = {mm: np.nan for mm in mm_names}
+        vgs_MM = {mm: np.nan for mm in mm_names}
+        vds_MM = {mm: np.nan for mm in mm_names}
+        cgg_MM = {mm: np.nan for mm in mm_names}
+        cgs_MM = {mm: np.nan for mm in mm_names}
+        cdd_MM = {mm: np.nan for mm in mm_names}
+        cgd_MM = {mm: np.nan for mm in mm_names}
+        css_MM = {mm: np.nan for mm in mm_names}
+        region_MM = {mm: np.nan for mm in mm_names}
+        noise_therm_rs_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_therm_rd_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_therm_rg_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_therm_sid_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_flicker_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_shot_igb_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_shot_igd_vrms_MM = {mm: np.nan for mm in mm_names}
+        noise_shot_igs_vrms_MM = {mm: np.nan for mm in mm_names}
+        fin_strength_risk_MM = {mm: np.nan for mm in mm_names}
+        pelgrom_coefficient_MM = {mm: np.nan for mm in mm_names}
+        stress_sensitivity_MM = {mm: np.nan for mm in mm_names}
+        bandwidth_jitter_risk_MM = {mm: np.nan for mm in mm_names}
 
         # dc sweep processing
         swing_low_v = swing_high_v = output_voltage_swing_range_v = None
         vos_v = None
         vdd_val = 0.0
         if dc_results:
-            mm_names = sorted(list(set(comp.split(':')[0] for comp in dc_results.keys() if comp.startswith('MM'))))
-            ids_MM    = {mm: np.nan for mm in mm_names}
-            gm_MM     = {mm: np.nan for mm in mm_names}
-            gds_MM    = {mm: np.nan for mm in mm_names}
-            vth_MM    = {mm: np.nan for mm in mm_names}
-            vdsat_MM  = {mm: np.nan for mm in mm_names}
-            vgs_MM    = {mm: np.nan for mm in mm_names}
-            vds_MM    = {mm: np.nan for mm in mm_names}
-            cgg_MM    = {mm: np.nan for mm in mm_names}
-            cgs_MM    = {mm: np.nan for mm in mm_names}
-            cdd_MM    = {mm: np.nan for mm in mm_names}
-            cgd_MM    = {mm: np.nan for mm in mm_names}
-            css_MM    = {mm: np.nan for mm in mm_names}
-            region_MM = {mm: np.nan for mm in mm_names}
+            dc_mm_names = set(comp.split(':')[0] for comp in dc_results.keys() if comp.startswith('MM'))
+            mm_names = sorted(set(mm_names) | dc_mm_names)
+            for mm in mm_names:
+                ids_MM.setdefault(mm, np.nan)
+                gm_MM.setdefault(mm, np.nan)
+                gds_MM.setdefault(mm, np.nan)
+                vth_MM.setdefault(mm, np.nan)
+                vdsat_MM.setdefault(mm, np.nan)
+                vgs_MM.setdefault(mm, np.nan)
+                vds_MM.setdefault(mm, np.nan)
+                cgg_MM.setdefault(mm, np.nan)
+                cgs_MM.setdefault(mm, np.nan)
+                cdd_MM.setdefault(mm, np.nan)
+                cgd_MM.setdefault(mm, np.nan)
+                css_MM.setdefault(mm, np.nan)
+                region_MM.setdefault(mm, np.nan)
+                noise_therm_rs_vrms_MM.setdefault(mm, np.nan)
+                noise_therm_rd_vrms_MM.setdefault(mm, np.nan)
+                noise_therm_rg_vrms_MM.setdefault(mm, np.nan)
+                noise_therm_sid_vrms_MM.setdefault(mm, np.nan)
+                noise_flicker_vrms_MM.setdefault(mm, np.nan)
+                noise_shot_igb_vrms_MM.setdefault(mm, np.nan)
+                noise_shot_igd_vrms_MM.setdefault(mm, np.nan)
+                noise_shot_igs_vrms_MM.setdefault(mm, np.nan)
+                fin_strength_risk_MM.setdefault(mm, np.nan)
+                pelgrom_coefficient_MM.setdefault(mm, np.nan)
+                stress_sensitivity_MM.setdefault(mm, np.nan)
+                bandwidth_jitter_risk_MM.setdefault(mm, np.nan)
 
             if params and 'vdd' in params:
                 vdd_val = float(params['vdd'])
@@ -159,6 +201,12 @@ class ACTB:
             if 'V0:p' in dc_results:
                 i_supply = np.abs(dc_results['V0:p'])
                 power_w = i_supply * vdd_val if vdd_val > 0 else i_supply
+
+            if 'v_cm_ctrl' in dc_results:
+                try:
+                    v_cm_ctrl = float(np.ravel(dc_results['v_cm_ctrl'])[0])
+                except Exception:
+                    v_cm_ctrl = None
 
             for comp, val in dc_results.items():
                 if not comp.startswith('MM'):
@@ -216,19 +264,67 @@ class ACTB:
                 gain_ol_lin = SpecCalc.find_dc_gain(vout)
 
         if params:
-            estimated_area_um2 = SpecCalc.find_estimated_area(params)
+            estimated_area_um2 = SpecCalc.find_estimated_area(params, size_map=size_map)
 
         if xf_resultsdict and gain_ol_lin is not None:
-            cmrr_dc_db = SpecCalc.find_cmrr(xf_resultsdict)
+            cmrr_dc_db = SpecCalc.find_cmrr(xf_resultsdict, gain_ol_lin)
 
         if xf_resultsdict and gain_ol_lin is not None:
-            psrr_dc_db = SpecCalc.find_psrr(xf_resultsdict)
+            psrr_dc_db = SpecCalc.find_psrr(xf_resultsdict, gain_ol_lin)
 
         if gain_ol_lin is not None and gain_ol_lin != 0:
             gain_ol_dc_db = 20 * np.log10(np.abs(gain_ol_lin))
 
         if noise_results:
             integrated_noise_vrms = SpecCalc.find_integrated_noise(noise_results)
+            transistor_noise = SpecCalc.find_transistor_noise_specs(noise_results)
+            if isinstance(transistor_noise, dict):
+                for mm_name, comp_vals in transistor_noise.items():
+                    if not isinstance(comp_vals, dict):
+                        continue
+                    noise_therm_rs_vrms_MM[mm_name] = float(comp_vals.get('noise_therm_rs_vrms', np.nan))
+                    noise_therm_rd_vrms_MM[mm_name] = float(comp_vals.get('noise_therm_rd_vrms', np.nan))
+                    noise_therm_rg_vrms_MM[mm_name] = float(comp_vals.get('noise_therm_rg_vrms', np.nan))
+                    noise_therm_sid_vrms_MM[mm_name] = float(comp_vals.get('noise_therm_sid_vrms', np.nan))
+                    noise_flicker_vrms_MM[mm_name] = float(comp_vals.get('noise_flicker_vrms', np.nan))
+                    noise_shot_igb_vrms_MM[mm_name] = float(comp_vals.get('noise_shot_igb_vrms', np.nan))
+                    noise_shot_igd_vrms_MM[mm_name] = float(comp_vals.get('noise_shot_igd_vrms', np.nan))
+                    noise_shot_igs_vrms_MM[mm_name] = float(comp_vals.get('noise_shot_igs_vrms', np.nan))
+
+        # stochastic per-transistor parameters
+        if params:
+            fin_vals = SpecCalc.find_fin_strength_risk(params, size_map)
+            if isinstance(fin_vals, dict):
+                for mm_name, val in fin_vals.items():
+                    fin_strength_risk_MM[mm_name] = float(val)
+
+            pelgrom_vals = SpecCalc.find_pelgrom(params, size_map)
+            if isinstance(pelgrom_vals, dict):
+                for mm_name, val in pelgrom_vals.items():
+                    pelgrom_coefficient_MM[mm_name] = float(val)
+
+        stress_vals = SpecCalc.find_stress_sensitivity(vgs_MM, vth_MM)
+        if isinstance(stress_vals, dict):
+            for mm_name, val in stress_vals.items():
+                stress_sensitivity_MM[mm_name] = float(val)
+
+        noise_specs_for_jitter = {}
+        for mm_name in mm_names:
+            noise_specs_for_jitter[mm_name] = {
+                'noise_therm_rs_vrms': noise_therm_rs_vrms_MM.get(mm_name, np.nan),
+                'noise_therm_rd_vrms': noise_therm_rd_vrms_MM.get(mm_name, np.nan),
+                'noise_therm_rg_vrms': noise_therm_rg_vrms_MM.get(mm_name, np.nan),
+                'noise_therm_sid_vrms': noise_therm_sid_vrms_MM.get(mm_name, np.nan),
+                'noise_flicker_vrms': noise_flicker_vrms_MM.get(mm_name, np.nan),
+                'noise_shot_igb_vrms': noise_shot_igb_vrms_MM.get(mm_name, np.nan),
+                'noise_shot_igd_vrms': noise_shot_igd_vrms_MM.get(mm_name, np.nan),
+                'noise_shot_igs_vrms': noise_shot_igs_vrms_MM.get(mm_name, np.nan),
+            }
+
+        jitter_vals = SpecCalc.find_bandwidth_jitter_risk(cgg_MM, ids_MM, noise_specs_for_jitter)
+        if isinstance(jitter_vals, dict):
+            for mm_name, val in jitter_vals.items():
+                bandwidth_jitter_risk_MM[mm_name] = float(val)
 
         if slew_results:
             time = slew_results.get('time', [])
@@ -264,7 +360,25 @@ class ACTB:
 
                 if diff_tran is not None:
                     min_len = min(len(time), len(diff_tran))
-                    settle_time_ns = SpecCalc.find_settle_time(list(zip(time[:min_len], diff_tran[:min_len])), vdd_val)
+                    settle_time_small_ns = SpecCalc.find_settle_time(list(zip(time[:min_len], diff_tran[:min_len])), vdd_val)
+
+        if slew_results:
+            time = slew_results.get('time', [])
+            t_val_p = slew_results.get('Voutp')
+            t_val_n = slew_results.get('Voutn')
+            if (time is None or len(time) == 0) and 'sweep_values' in slew_results:
+                time = slew_results['sweep_values']
+
+            if t_val_p is not None and len(t_val_p) > 0:
+                if t_val_n is not None and len(t_val_n) > 0:
+                    min_t_len = min(len(t_val_p), len(t_val_n))
+                    diff_tran = np.array(t_val_p[:min_t_len]) - np.array(t_val_n[:min_t_len])
+                else:
+                    diff_tran = None
+
+                if diff_tran is not None:
+                    min_len = min(len(time), len(diff_tran))
+                    settle_time_large_ns = SpecCalc.find_settle_time(list(zip(time[:min_len], diff_tran[:min_len])), vdd_val)
 
         if thd_results:
             thd_db = SpecCalc.find_thd(thd_results)
@@ -293,7 +407,8 @@ class ACTB:
         )
         integrated_noise_vrms_valid = integrated_noise_vrms is not None
         slew_rate_v_us_valid = (slew_rate_v_us is not None) and (slew_rate_v_us > 0.0)
-        settle_time_ns_valid = (settle_time_ns is not None) and (settle_time_ns > 0.0)
+        settle_time_small_ns_valid = (settle_time_small_ns is not None) and (settle_time_small_ns > 0.0)
+        settle_time_large_ns_valid = (settle_time_large_ns is not None) and (settle_time_large_ns > 0.0)
 
         return dict(
             gain_ol_dc_db = gain_ol_dc_db if gain_ol_dc_db is not None else np.nan,
@@ -301,6 +416,7 @@ class ACTB:
             pm_deg = pm_deg if pm_deg is not None else np.nan,
             estimated_area_um2 = estimated_area_um2 if estimated_area_um2 is not None else np.nan,
             power_w = power_w if power_w is not None else np.nan,
+            v_cm_ctrl = v_cm_ctrl if v_cm_ctrl is not None else np.nan,
             vos_v = vos_v if vos_v is not None else np.nan,
             cmrr_dc_db = cmrr_dc_db if cmrr_dc_db is not None else np.nan,
             psrr_dc_db = psrr_dc_db if psrr_dc_db is not None else np.nan,
@@ -310,7 +426,8 @@ class ACTB:
             output_voltage_swing_max_v = swing_high_v if swing_high_v is not None else np.nan,
             integrated_noise_vrms = integrated_noise_vrms if integrated_noise_vrms is not None else np.nan,
             slew_rate_v_us = slew_rate_v_us if (slew_rate_v_us is not None and slew_rate_v_us > 0.0) else np.nan,
-            settle_time_ns = settle_time_ns if (settle_time_ns is not None and settle_time_ns > 0.0) else np.nan,
+            settle_time_small_ns = settle_time_small_ns if (settle_time_small_ns is not None and settle_time_small_ns > 0.0) else np.nan,
+            settle_time_large_ns = settle_time_large_ns if (settle_time_large_ns is not None and settle_time_large_ns > 0.0) else np.nan,
             gain_ol_dc_db_valid = gain_ol_dc_db_valid,
             ugbw_hz_valid = ugbw_hz_valid,
             pm_deg_valid = pm_deg_valid,
@@ -323,8 +440,9 @@ class ACTB:
             output_voltage_swing_range_v_valid = output_voltage_swing_range_v_valid,
             integrated_noise_vrms_valid = integrated_noise_vrms_valid,
             slew_rate_v_us_valid = slew_rate_v_us_valid,
-            settle_time_ns_valid = settle_time_ns_valid,
-            zregion_of_operation_MM = region_MM,
+            settle_time_small_ns_valid = settle_time_small_ns_valid,
+            settle_time_large_ns_valid = settle_time_large_ns_valid,
+            zzregion_of_operation_MM = region_MM,
             zzids_MM = ids_MM,
             zzvds_MM = vds_MM,
             zzvgs_MM = vgs_MM,
@@ -337,4 +455,16 @@ class ACTB:
             zzcdd_MM = cdd_MM,
             zzcgd_MM = cgd_MM,
             zzcss_MM = css_MM,
+            zznoise_therm_rs_vrms_MM = noise_therm_rs_vrms_MM,
+            zznoise_therm_rd_vrms_MM = noise_therm_rd_vrms_MM,
+            zznoise_therm_rg_vrms_MM = noise_therm_rg_vrms_MM,
+            zznoise_therm_sid_vrms_MM = noise_therm_sid_vrms_MM,
+            zznoise_flicker_vrms_MM = noise_flicker_vrms_MM,
+            zznoise_shot_igb_vrms_MM = noise_shot_igb_vrms_MM,
+            zznoise_shot_igd_vrms_MM = noise_shot_igd_vrms_MM,
+            zznoise_shot_igs_vrms_MM = noise_shot_igs_vrms_MM,
+            zzfin_strength_risk_MM = fin_strength_risk_MM,
+            zzpelgrom_coefficient_MM = pelgrom_coefficient_MM,
+            zzstress_sensitivity_MM = stress_sensitivity_MM,
+            zzbandwidth_jitter_risk_MM = bandwidth_jitter_risk_MM,
         )

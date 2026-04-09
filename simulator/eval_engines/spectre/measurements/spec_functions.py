@@ -15,6 +15,50 @@ import scipy.interpolate as interp
 import scipy.optimize as sciopt
 
 
+ESTIMATED_AREA_NODE_MAP = {
+    7: {
+        'LSTP': {'cpp': 54e-9, 'pitch': 36e-9, 'cap_density': 3.84e-3, 'res_coeff': 1.94e-19},
+        'HP':   {'cpp': 57e-9, 'pitch': 57e-9, 'cap_density': 2.42e-3, 'res_coeff': 7.72e-19}
+        # Verified: 7nm Cobalt (120 nOhm-m)
+    },
+    10: {
+        'LSTP': {'cpp': 54e-9, 'pitch': 36e-9, 'cap_density': 3.84e-3, 'res_coeff': 2.48e-19},
+        'HP':   {'cpp': 54e-9, 'pitch': 36e-9, 'cap_density': 3.84e-3, 'res_coeff': 2.48e-19}
+        # Verified: 10nm Cobalt (94 nOhm-m)
+    },
+    14: {
+        'LSTP': {'cpp': 78e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 2.18e-18},
+        'HP':   {'cpp': 78e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 2.18e-18}
+        # Verified: 14nm Copper (60 nOhm-m)
+    },
+    16: {
+        'LSTP': {'cpp': 90e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 2.91e-18},
+        'HP':   {'cpp': 90e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 2.91e-18}
+        # Verified: 16nm Copper (45 nOhm-m)
+    },
+    20: {
+        'LSTP': {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 3.97e-18},
+        'HP':   {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 2.16e-3, 'res_coeff': 3.97e-18}
+        # Verified: 20nm Copper (33 nOhm-m)
+    }
+}
+
+FIN_GEOMETRY_MAP = {
+    7:  {'t_fin': 6.5, 'h_fin': 18.0},
+    10: {'t_fin': 8.0, 'h_fin': 21.0},
+    14: {'t_fin': 10.0, 'h_fin': 23.0},
+    16: {'t_fin': 12.0, 'h_fin': 26.0},
+    20: {'t_fin': 15.0, 'h_fin': 28.0}
+}
+
+AVT_PELGROM_COEFFICIENTS = {
+    7:  1.1e-9,   # 1.1 mV*um in V*m
+    10: 1.1e-9,   # 1.1 mV*um in V*m
+    14: 1.07e-9,  # 1.07 mV*um in V*m
+    16: 1.07e-9,  # 1.07 mV*um in V*m
+    20: 2.08e-9   # 2.08 mV*um in V*m
+}
+
 class SpecCalc:
     """
     Static helper functions for measurement and spec calculations.
@@ -344,12 +388,164 @@ class SpecCalc:
         total_power_v2 = sinteg.trapezoid(noise_asd_sliced**2, freqs_sliced[:len(noise_asd_sliced)])
         return float(np.sqrt(max(total_power_v2, 0.0)))
 
+    @staticmethod
+    def find_transistor_noise_specs(noise_results):
+        """
+        Build per-transistor VRMS noise component specs.
+
+        Expected input layout:
+            noise_results["MMx"] -> array-like of per-frequency dict-like entries
+            each entry containing component keys such as flicker, therm_rs, therm_rd,
+            therm_rg, therm_sid (as either bytes or str keys).
+
+        Returns:
+        --------
+        dict: {
+            "MMx": {
+                "noise_therm_rs_vrms": float,
+                "noise_therm_rd_vrms": float,
+                "noise_therm_rg_vrms": float,
+                "noise_therm_sid_vrms": float,
+                "noise_flicker_vrms": float,
+            },
+            ...
+        }
+        """
+        if not isinstance(noise_results, dict) or len(noise_results) == 0:
+            return {}
+
+        component_map = {
+            'noise_therm_rs_vrms': 'therm_rs',
+            'noise_therm_rd_vrms': 'therm_rd',
+            'noise_therm_rg_vrms': 'therm_rg',
+            'noise_therm_sid_vrms': 'therm_sid',
+            'noise_flicker_vrms': 'flicker',
+            'noise_shot_igb_vrms': 'shot_igb',
+            'noise_shot_igd_vrms': 'shot_igd',
+            'noise_shot_igs_vrms': 'shot_igs',
+        }
+
+        def _extract_component(row, base_keys):
+            if row is None:
+                return None
+
+            if isinstance(base_keys, str):
+                base_keys = (base_keys,)
+
+            if isinstance(row, dict):
+                for base_key in base_keys:
+                    if base_key in row:
+                        return row.get(base_key)
+                    bkey = base_key.encode('utf-8')
+                    if bkey in row:
+                        return row.get(bkey)
+
+            if hasattr(row, 'dtype') and getattr(row.dtype, 'names', None):
+                names = list(row.dtype.names)
+                for base_key in base_keys:
+                    if base_key in names:
+                        return row[base_key]
+                    bkey = base_key.encode('utf-8')
+                    if bkey in names:
+                        return row[bkey]
+
+            return None
+
+        def _extract_freq_vector(nr):
+            for fkey in ('sweep_values', 'freq', 'frequency'):
+                raw = nr.get(fkey)
+                if raw is None:
+                    raw = nr.get(fkey.encode('utf-8'))
+                if raw is None:
+                    continue
+                try:
+                    f = np.ravel(np.asarray(raw, dtype=float))
+                except Exception:
+                    continue
+                finite = np.isfinite(f)
+                f = f[finite]
+                if len(f) < 2:
+                    continue
+                # Enforce monotonic integration axis.
+                if np.any(np.diff(f) <= 0):
+                    order = np.argsort(f)
+                    f = f[order]
+                    uniq_f, uniq_idx = np.unique(f, return_index=True)
+                    f = uniq_f
+                    if len(uniq_idx) < 2:
+                        continue
+                return f
+            return None
+
+        freq_arr = _extract_freq_vector(noise_results)
+
+        skip_keys = {'sweep_values', 'sweep_vars', 'out', 'time', 'freq'}
+        transistor_specs = {}
+
+        for device, rows in noise_results.items():
+            if isinstance(device, bytes):
+                try:
+                    device_name = device.decode('utf-8')
+                except Exception:
+                    continue
+            elif isinstance(device, str):
+                device_name = device
+            else:
+                continue
+
+            if device_name in skip_keys or not device_name.startswith('MM'):
+                continue
+
+            if not hasattr(rows, '__len__'):
+                continue
+
+            try:
+                row_arr = np.ravel(np.asarray(rows, dtype=object))
+            except Exception:
+                continue
+
+            if len(row_arr) == 0:
+                continue
+
+            per_device = {}
+            for out_key, base_key in component_map.items():
+                series = []
+                for row in row_arr:
+                    raw_val = _extract_component(row, base_key)
+                    if raw_val is None:
+                        continue
+                    try:
+                        raw_arr = np.ravel(np.asarray(raw_val))
+                        if len(raw_arr) == 0:
+                            continue
+                        series.append(float(np.abs(raw_arr[0])))
+                    except Exception:
+                        continue
+
+                if len(series) < 1:
+                    per_device[out_key] = np.nan
+                    continue
+
+                series_arr = np.ravel(np.asarray(series, dtype=float))
+                if freq_arr is None or len(freq_arr) != len(series_arr):
+                    # require aligned frequency axis for true integration
+                    per_device[out_key] = np.nan
+                    continue
+
+                power = sinteg.trapezoid(series_arr**2, freq_arr)
+                per_device[out_key] = float(np.sqrt(max(power, 0.0)))
+
+            transistor_specs[device_name] = per_device
+
+        return transistor_specs
+
 
     @staticmethod
-    def find_slew_rate(tran_data, delay=5.0, lo_pct=0.1, hi_pct=0.9, min_swing=10.0):
+    def find_slew_rate(tran_data, delay=25.0, lo_pct=0.1, hi_pct=0.9, min_swing=10.0):
         """
         Find slew rate from transient waveform.
         Uses SciPy PCHIP interpolation over dense dynamic time-steps.
+        Hardened for 1G-ohm sensing delay and high-order OTA ringing.
 
         Units: time [ns], vout [mV]. Returns [V/us].
         """
@@ -361,34 +557,40 @@ class SpecCalc:
             data = np.asarray(tran_data, dtype=float)
         except Exception:
             return None
+            
         if data.ndim != 2 or data.shape[1] < 2:
             return None
+            
         time, vout = data[:, 0], data[:, 1]
 
         # 1. Isolate post-step region
         mask = time >= delay
-        if np.sum(mask) < 5: 
+        if np.sum(mask) < 10: 
             return None
             
         t_s, v_s = time[mask], vout[mask]
 
         # S-TIER FIX: The SciPy Scrubber. 
-        # Removes duplicate timestamps caused by Spectre solver resets.
+        # Removes duplicate timestamps caused by Spectre solver resets/re-steps.
         t_s, unique_indices = np.unique(t_s, return_index=True)
         v_s = v_s[unique_indices]
         
-        if len(t_s) < 5:
+        if len(t_s) < 10:
             return None
 
-        # 2. Estimate steady-state from tail window
-        t_end = t_s[-1]
-        final_window_mask = t_s >= (t_end - 2.0) 
+        # 2. Estimate steady-state with Averaging
+        # We average the start to ignore residual 1G sensing RC drift.
+        v_init = np.mean(v_s[:5]) 
         
-        v_init = v_s[0]
+        # Dynamic tail window: use the last 10% of simulation time (min 2ns)
+        t_span = t_s[-1] - t_s[0]
+        tail_size = max(2.0, t_span * 0.1)
+        final_window_mask = t_s >= (t_s[-1] - tail_size)
+        
         v_final = np.mean(v_s[final_window_mask]) if np.any(final_window_mask) else v_s[-1]
         delta_v = v_final - v_init
 
-        # Reject small/railed movement
+        # Reject cases where the OTA didn't actually move or is railed
         if np.abs(delta_v) < min_swing:
             return None 
 
@@ -396,14 +598,14 @@ class SpecCalc:
         v10 = v_init + lo_pct * delta_v
         v90 = v_init + hi_pct * delta_v
 
-        # 4. Interpolate with PCHIP
+        # 4. Interpolate with PCHIP (Monotonicity Preserving)
         try:
             v_interp = interp.PchipInterpolator(t_s, v_s, extrapolate=False)
         except Exception:
             return None
 
         def _first_crossing_time(threshold, rising):
-            # Bracket first crossing
+            # Bracket the transition interval
             if rising:
                 bracket = np.where((v_s[:-1] <= threshold) & (v_s[1:] > threshold))[0]
             else:
@@ -412,14 +614,15 @@ class SpecCalc:
             if len(bracket) == 0:
                 return None
 
+            # Take the first crossing (standard for SR)
             i = int(bracket[0])
             t0, t1 = float(t_s[i]), float(t_s[i + 1])
 
             try:
-                # Root-find on PCHIP curve
+                # Root-find on PCHIP curve for sub-picosecond accuracy
                 return float(sciopt.brentq(lambda tt: float(v_interp(tt) - threshold), t0, t1))
             except Exception:
-                # Linear fallback if BrentQ fails to converge
+                # Linear fallback if BrentQ fails
                 v0, v1 = float(v_s[i]), float(v_s[i + 1])
                 return float(t0 + (t1 - t0) * (threshold - v0) / (v1 - v0))
 
@@ -430,91 +633,89 @@ class SpecCalc:
         if t10 is None or t90 is None:
             return None
 
-        dt = float(t90 - t10)
-        dv = float(v90 - v10)
+        dt = float(np.abs(t90 - t10))
+        dv = float(np.abs(v90 - v10))
 
-        # 5. Resolution guard
-        points_in_transition = np.sum((t_s >= t10) & (t_s <= t90))
+        # 5. Resolution Guard: Ensure we have enough simulated points in the slope
+        # If Spectre didn't step enough, the SR is likely a numerical artifact.
+        points_in_transition = np.sum((t_s >= min(t10, t90)) & (t_s <= max(t10, t90)))
         if points_in_transition < 3:
             return None
 
-        # 6. Final calculation (mV/ns is numerically equivalent to V/us)
-        if dt < 1e-12: 
+        # 6. Final calculation (mV/ns == V/us)
+        if dt < 1e-15: # Protect against division by zero
             return None
             
-        return float(np.abs(dv / dt))
+        return float(dv / dt)
 
     @staticmethod
-    def find_settle_time(tran_data, vdd, tol=0.01, step_fraction=0.05, delay=5.0, noise_floor_mv=0.1):
+    def find_settle_time(tran_data, vdd, tol=0.001, step_fraction=0.05, delay=25.0, noise_floor_mv=0.1):
         """
         Find settling time from transient waveform using SciPy PCHIP.
+        Robust against 1G-ohm sensing drift and multi-stage ringing.
         """
         if not tran_data or len(tran_data) < 10:
             return None
 
         try:
             data = np.asarray(tran_data, dtype=float)
-        except Exception:
-            return None
-        if data.ndim != 2 or data.shape[1] < 2:
-            return None
+        except Exception: return None
+        
         t, v = data[:, 0], data[:, 1]
 
+        # 1. Isolate post-step and Scrubber
         post_step_mask = t >= delay
-        if np.sum(post_step_mask) < 10:
-            return None
-
+        if np.sum(post_step_mask) < 10: return None
         t_post, v_post = t[post_step_mask], v[post_step_mask]
+        t_post, idx = np.unique(t_post, return_index=True)
+        v_post = v_post[idx]
 
-        # S-TIER FIX: The SciPy Scrubber
-        t_post, unique_indices = np.unique(t_post, return_index=True)
-        v_post = v_post[unique_indices]
-
-        # 1. Establish tolerance band from stimulus
+        # 2. Establish tolerance band
         ideal_step_size = float(vdd) * step_fraction
         band = max(ideal_step_size * tol, noise_floor_mv)
         
-        # 2. Estimate final steady-state
-        tail_idx = max(5, int(len(v_post) * 0.1))
-        v_final = np.mean(v_post[-tail_idx:])
-
-        # 3. Reject dead/railed designs
-        pre_step_mask = (t < delay) & (t > delay - 1.0) 
-        v_initial = np.mean(v[pre_step_mask]) if np.sum(pre_step_mask) > 0 else v_post[0]
-        achieved_swing = np.abs(v_final - v_initial)
+        # 3. Establish Steady States
+        # Initial: Average the 1ns window before the step to ignore 1G-ohm RC noise
+        pre_mask = (t < delay) & (t >= (delay - 1.0))
+        v_initial = np.mean(v[pre_mask]) if np.any(pre_mask) else v_post[0]
         
-        if achieved_swing < (ideal_step_size * 0.5):
+        # Final: Average last 10% of simulation
+        tail_len = max(5, int(len(v_post) * 0.1))
+        v_final = np.mean(v_post[-tail_len:])
+
+        # Check if the circuit actually responded
+        if np.abs(v_final - v_initial) < (ideal_step_size * 0.5):
             return None
 
-        # 4. Settle check
+        # 4. Settle check (work backwards from the end to find LAST exit of band)
         err = np.abs(v_post - v_final)
         unsettled_indices = np.where(err > band)[0]
         
         if len(unsettled_indices) == 0:
-            return 0.0
+            return 0.0 # Already settled by 'delay'
             
-        last_unsettled_idx = unsettled_indices[-1]
+        last_i = unsettled_indices[-1]
         
-        if last_unsettled_idx >= len(t_post) - 2:
+        # If the last index is the last point, it never settled
+        if last_i >= len(t_post) - 2:
             return None
-            
-        # 5. Precise crossing extraction
-        i0, i1 = int(last_unsettled_idx), int(last_unsettled_idx + 1)
+                
+        # 5. Precise crossing extraction with PCHIP
+        i0, i1 = last_i, last_i + 1
         t0, t1 = float(t_post[i0]), float(t_post[i1])
-        e0, e1 = float(err[i0] - band), float(err[i1] - band)
 
-        t_settled = t1
         try:
             v_interp = interp.PchipInterpolator(t_post, v_post, extrapolate=False)
-            def ferr(tt):
-                return abs(float(v_interp(tt)) - float(v_final)) - float(band)
-
-            if e0 > 0.0 and e1 <= 0.0:
-                t_settled = float(sciopt.brentq(ferr, t0, t1))
+            # Find exactly where |v(t) - v_final| == band
+            def root_func(tt):
+                return abs(float(v_interp(tt)) - v_final) - band
+            
+            # We know a crossing exists between t0 and t1
+            t_settled = float(sciopt.brentq(root_func, t0, t1))
         except Exception:
             # Linear fallback
-            if e0 > 0.0 and e1 <= 0.0 and not np.isclose(e0, e1):
-                t_settled = float(t0 + (t1 - t0) * (-e0) / (e1 - e0))
+            e0, e1 = err[i0] - band, err[i1] - band
+            t_settled = t0 + (t1 - t0) * (0 - e0) / (e1 - e0)
         
         return float(max(0.0, t_settled - delay))
 
@@ -598,103 +799,356 @@ class SpecCalc:
         return np.array([]), np.array([])
 
     @staticmethod
-    def find_estimated_area(params):
+    def find_estimated_area(params, size_map):
         """
         Estimate total on-chip area in um^2 from sizing parameters.
+
+        Active area is accumulated per transistor instance (component-aware)
+        using the required size_map.
         """
         if not isinstance(params, dict) or len(params) == 0:
             return None
+        if not isinstance(size_map, dict) or len(size_map) == 0:
+            return None
 
-        # node-specific design rules (cpp: contacted poly pitch, pitch: fin/metal pitch)
-        # cap density in f/um^2, res coeff in um^2/ohm
-        node_map = {
-            7: {
-                'LSTP': {'cpp': 54e-9, 'pitch': 27e-9, 'cap_density': 2.0e-15 / 1e-12, 'res_coeff': 400},
-                'HP':   {'cpp': 57e-9, 'pitch': 30e-9, 'cap_density': 2.0e-15 / 1e-12, 'res_coeff': 400}
-                # source: ASAP7, AMD
-            },
-            10: {
-                'LSTP': {'cpp': 54e-9, 'pitch': 34e-9, 'cap_density': 1.8e-15 / 1e-12, 'res_coeff': 300},
-                'HP':   {'cpp': 54e-9, 'pitch': 44e-9, 'cap_density': 1.8e-15 / 1e-12, 'res_coeff': 300}
-                # source: Intel
-            },
-            14: {
-                'LSTP': {'cpp': 78e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200},
-                'HP':   {'cpp': 78e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200}
-                # source: AMD
-            },
-            16: {
-                'LSTP': {'cpp': 90e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200},
-                'HP':   {'cpp': 90e-9, 'pitch': 48e-9, 'cap_density': 1.5e-15 / 1e-12, 'res_coeff': 200}
-                # source: TSMC
-            },
-            20: {
-                'LSTP': {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 1.2e-15 / 1e-12, 'res_coeff': 150},
-                'HP':   {'cpp': 86e-9, 'pitch': 64e-9, 'cap_density': 1.2e-15 / 1e-12, 'res_coeff': 150}
-                # source: IBM 
-            }
-        }
-                
         # standard analog layout overhead
         layout_overhead_factor = 3.0
 
         try:
-            # default to 7nm if not specified
             tech_node = int(params.get('fet_num'))
-        except Exception:
-            tech_node = 7
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid fet_num value: {params.get('fet_num')}")
 
-        tech_options = node_map.get(tech_node, node_map[7])
-        is_hp = bool(params.get('is_hp', False))
+        tech_options = ESTIMATED_AREA_NODE_MAP.get(tech_node, ESTIMATED_AREA_NODE_MAP[7])
+        is_hp = int(params.get('is_hp', 0)) == 1
         tech = tech_options['HP'] if is_hp else tech_options['LSTP']
         area_m2 = 0.0
 
-        # 1. active device footprint
-        for key, val in params.items():
-            if not key.startswith('nA'):
+        # 1. active device footprint (per transistor instance)
+        for comp_name, comp_params in size_map.items():
+            if not isinstance(comp_name, str) or not comp_name.startswith('MM'):
                 continue
-            
-            suffix = key[2:]
-            width_key = 'nB' + suffix
-            
-            if width_key in params:
-                try:
-                    # x-dimension: gate length padded by one cpp
-                    l_gate = float(val)
-                    x_dim = max(l_gate, tech['cpp']) + tech['cpp']
-                    
-                    # y-dimension: (fins + 1) * fin pitch
-                    num_fins = max(int(params[width_key]), 1)
-                    y_dim = (num_fins + 1) * tech['pitch']
-                    
-                    area_m2 += (x_dim * y_dim)
-                except (ValueError, TypeError):
-                    continue
+            if not isinstance(comp_params, dict):
+                raise ValueError(f"Invalid transistor mapping for {comp_name}: expected dict")
+
+            l_cand = comp_params.get('l')
+            nfin_cand = comp_params.get('nfin')
+
+            if not isinstance(l_cand, str) or not isinstance(nfin_cand, str):
+                raise ValueError(
+                    f"Missing transistor mapping keys for {comp_name}: "
+                    f"l={comp_params.get('l')}, nfin={comp_params.get('nfin')}"
+                )
+            if l_cand not in params or nfin_cand not in params:
+                raise ValueError(
+                    f"Missing transistor params for {comp_name}: "
+                    f"{l_cand} present={l_cand in params}, {nfin_cand} present={nfin_cand in params}"
+                )
+
+            try:
+                l_gate = float(params[l_cand])
+                num_fins = int(params[nfin_cand])
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid transistor sizing for {comp_name}: "
+                    f"l={params.get(l_cand)}, nfin={params.get(nfin_cand)}"
+                )
+
+            if l_gate <= 0 or num_fins <= 0:
+                raise ValueError(
+                    f"Non-positive transistor sizing for {comp_name}: "
+                    f"l={l_gate}, nfin={num_fins}"
+                )
+
+            x_dim = max(l_gate, tech['cpp']) + tech['cpp']
+            y_dim = (num_fins + 1) * tech['pitch']
+            area_m2 += (x_dim * y_dim)
 
         # apply global layout overhead to active area
         area_m2 *= layout_overhead_factor
 
-        # 2. passive devices
-        cap_density = tech['cap_density']
+        # 2. passive devices (per capacitor/resistor instance)
+        cap_density_f_per_m2 = tech['cap_density']
         res_area_coeff = tech['res_coeff']
-        
-        for key, val in params.items():
-            try:
-                num_val = float(val)
-                if num_val <= 0: continue
-                
-                # nC_x = capacitance (f)
-                if key.startswith('nC'):
-                    area_m2 += num_val / cap_density
-                    
-                # nR_x = resistance (ohm)
-                elif key.startswith('nR'):
-                    area_m2 += num_val * res_area_coeff
-            except (ValueError, TypeError):
+        if cap_density_f_per_m2 <= 0:
+            raise ValueError(f"Invalid cap_density for node {tech_node}: {cap_density_f_per_m2}")
+        if res_area_coeff <= 0:
+            raise ValueError(f"Invalid res_coeff for node {tech_node}: {res_area_coeff}")
+
+        for comp_name, comp_params in size_map.items():
+            if not isinstance(comp_name, str):
                 continue
+
+            # Capacitor instances: use mapped value parameter (F) and convert to m^2 via F/m^2.
+            if comp_name.startswith('CC'):
+                if not isinstance(comp_params, dict):
+                    raise ValueError(f"Invalid capacitor mapping for {comp_name}: expected dict")
+
+                c_param = comp_params.get('c')
+                if not isinstance(c_param, str):
+                    raise ValueError(f"Missing capacitor mapping key 'c' for {comp_name}: got {c_param!r}")
+                if c_param not in params:
+                    raise ValueError(f"Missing capacitor param for {comp_name}: {c_param}")
+
+                try:
+                    c_val = float(params[c_param])
+                except (ValueError, TypeError):
+                    raise ValueError(
+                        f"Invalid capacitor value for {comp_name}: {params.get(c_param)}"
+                    )
+
+                if c_val <= 0:
+                    raise ValueError(f"Non-positive capacitor value for {comp_name}: {c_val}")
+                area_m2 += c_val / cap_density_f_per_m2
+
+            # Resistor instances: use mapped value parameter (ohm) with m^2/ohm coeff.
+            elif comp_name.startswith('RR'):
+                if not isinstance(comp_params, dict):
+                    raise ValueError(f"Invalid resistor mapping for {comp_name}: expected dict")
+
+                r_param = comp_params.get('r')
+                if not isinstance(r_param, str):
+                    raise ValueError(f"Missing resistor mapping key 'r' for {comp_name}: got {r_param!r}")
+                if r_param not in params:
+                    raise ValueError(f"Missing resistor param for {comp_name}: {r_param}")
+
+                try:
+                    r_val = float(params[r_param])
+                except (ValueError, TypeError):
+                    raise ValueError(
+                        f"Invalid resistor value for {comp_name}: {params.get(r_param)}"
+                    )
+
+                if r_val <= 0:
+                    raise ValueError(f"Non-positive resistor value for {comp_name}: {r_val}")
+                area_m2 += (r_val * res_area_coeff)
 
         # return as um^2
         return float(area_m2 * 1e12)
+
+    @staticmethod
+    def find_pelgrom(params, size_map):
+        """
+        Compute the Pelgrom mismatch coefficient Avt * 1/sqrt(L*W) for each transistor
+        instance (MM*) in size_map.
+
+        Avt is the threshold voltage mismatch coefficient from literature (V*m).
+        Weff_per_fin = 2*h_fin + t_fin  (fin geometry from FIN_GEOMETRY_MAP, nm -> m)
+        W = nfin * Weff_per_fin
+        L = gate length from params (m)
+        Pelgrom = Avt * 1/sqrt(L*W)
+
+        Returns a dict {comp_name: pelgrom_coefficient} for every MM* instance.
+        """
+        if not isinstance(params, dict) or len(params) == 0:
+            return None
+        if not isinstance(size_map, dict) or len(size_map) == 0:
+            return None
+
+        try:
+            tech_node = int(params.get('fet_num'))
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid fet_num value: {params.get('fet_num')}")
+
+        fin_geo = FIN_GEOMETRY_MAP.get(tech_node)
+        if fin_geo is None:
+            raise ValueError(f"Unsupported tech node for Pelgrom: {tech_node}")
+        
+        avt_coeff = AVT_PELGROM_COEFFICIENTS.get(tech_node)
+        if avt_coeff is None:
+            raise ValueError(f"Unsupported tech node for Pelgrom Avt: {tech_node}")
+
+        # convert nm -> m
+        t_fin = fin_geo['t_fin'] * 1e-9
+        h_fin = fin_geo['h_fin'] * 1e-9
+        weff_per_fin = 2.0 * h_fin + t_fin
+
+        pelgrom = {}
+        for comp_name, comp_params in size_map.items():
+            if not isinstance(comp_name, str) or not comp_name.startswith('MM'):
+                continue
+            if not isinstance(comp_params, dict):
+                raise ValueError(f"Invalid transistor mapping for {comp_name}: expected dict")
+
+            l_cand = comp_params.get('l')
+            nfin_cand = comp_params.get('nfin')
+
+            if not isinstance(l_cand, str) or not isinstance(nfin_cand, str):
+                raise ValueError(
+                    f"Missing transistor mapping keys for {comp_name}: "
+                    f"l={l_cand!r}, nfin={nfin_cand!r}"
+                )
+            if l_cand not in params or nfin_cand not in params:
+                raise ValueError(
+                    f"Missing transistor params for {comp_name}: "
+                    f"{l_cand} present={l_cand in params}, {nfin_cand} present={nfin_cand in params}"
+                )
+
+            try:
+                l_gate = float(params[l_cand])
+                num_fins = int(params[nfin_cand])
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid transistor sizing for {comp_name}: "
+                    f"l={params.get(l_cand)}, nfin={params.get(nfin_cand)}"
+                )
+
+            if l_gate <= 0 or num_fins <= 0:
+                raise ValueError(
+                    f"Non-positive transistor sizing for {comp_name}: "
+                    f"l={l_gate}, nfin={num_fins}"
+                )
+
+            w_eff = num_fins * weff_per_fin
+            pelgrom[comp_name] = avt_coeff / (l_gate * w_eff) ** 0.5
+
+        return pelgrom
+
+    @staticmethod
+    def find_fin_strength_risk(params, size_map):
+        """
+        Compute per-transistor fin-strength risk as 1/sqrt(nfin).
+
+        Parameters:
+        -----------
+        params (dict): Parameter dictionary containing resolved numeric values.
+        size_map (dict): Component mapping dictionary.
+
+        Returns:
+        --------
+        dict: {"MMx": 1/sqrt(nfin)} for each transistor in size_map.
+        """
+        if not isinstance(params, dict) or len(params) == 0:
+            return None
+        if not isinstance(size_map, dict) or len(size_map) == 0:
+            return None
+
+        fin_strength_risk = {}
+        for comp_name, comp_params in size_map.items():
+            if not isinstance(comp_name, str) or not comp_name.startswith('MM'):
+                continue
+            if not isinstance(comp_params, dict):
+                raise ValueError(f"Invalid transistor mapping for {comp_name}: expected dict")
+
+            nfin_cand = comp_params.get('nfin')
+            if not isinstance(nfin_cand, str):
+                raise ValueError(
+                    f"Missing transistor mapping key for {comp_name}: nfin={nfin_cand!r}"
+                )
+            if nfin_cand not in params:
+                raise ValueError(f"Missing transistor nfin param for {comp_name}: {nfin_cand}")
+
+            try:
+                num_fins = int(params[nfin_cand])
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Invalid transistor nfin for {comp_name}: {params.get(nfin_cand)}"
+                )
+
+            if num_fins <= 0:
+                raise ValueError(f"Non-positive transistor nfin for {comp_name}: {num_fins}")
+
+            fin_strength_risk[comp_name] = 1.0 / (num_fins ** 0.5)
+
+        return fin_strength_risk
+
+    @staticmethod
+    def find_stress_sensitivity(vgs_dict, vth_dict):
+        """
+        Compute stress sensitivity abs(Vgs - Vth) for each transistor.
+
+        Parameters:
+        -----------
+        vgs_dict (dict): {comp_name: vgs_value} e.g. {'MM0': -0.4, ...}
+        vth_dict (dict): {comp_name: vth_value} e.g. {'MM0': -0.35, ...}
+
+        Returns:
+        --------
+        dict: {comp_name: abs(vgs - vth)} for all keys in vgs_dict.
+              Value is np.nan if vgs or vth is np.nan.
+        """
+        result = {}
+        all_keys = set(vgs_dict.keys()) | set(vth_dict.keys())
+        for comp_name in all_keys:
+            vgs = vgs_dict.get(comp_name, np.nan)
+            vth = vth_dict.get(comp_name, np.nan)
+            if np.isnan(vgs) or np.isnan(vth):
+                result[comp_name] = np.nan
+                continue
+            result[comp_name] = abs(vgs - vth)
+        return result
+
+    @staticmethod
+    def find_bandwidth_jitter_risk(cgg_dict, ids_dict, transistor_noise_specs_dict):
+        """
+        Compute per-transistor bandwidth jitter risk.
+
+        For each transistor, compute RMS sum of all 8 integrated noise components,
+        then multiply by (cgg / ids):
+
+            jitter_risk = sqrt(sum_i(noise_i^2)) * (cgg / ids)
+
+        If any required noise component is NaN/missing, or cgg/ids is NaN/missing,
+        or ids == 0, the jitter risk for that transistor is set to NaN.
+        """
+        if not isinstance(cgg_dict, dict) or not isinstance(ids_dict, dict) or not isinstance(transistor_noise_specs_dict, dict):
+            return {}
+
+        noise_keys = (
+            'noise_therm_rs_vrms',
+            'noise_therm_rd_vrms',
+            'noise_therm_rg_vrms',
+            'noise_therm_sid_vrms',
+            'noise_flicker_vrms',
+            'noise_shot_igb_vrms',
+            'noise_shot_igd_vrms',
+            'noise_shot_igs_vrms',
+        )
+
+        risk = {}
+        all_keys = set(cgg_dict.keys()) | set(ids_dict.keys()) | set(transistor_noise_specs_dict.keys())
+        for comp_name in all_keys:
+            cgg_val = cgg_dict.get(comp_name, np.nan)
+            ids_val = ids_dict.get(comp_name, np.nan)
+
+            try:
+                cgg = float(cgg_val)
+                ids = float(ids_val)
+            except (TypeError, ValueError):
+                risk[comp_name] = np.nan
+                continue
+
+            if np.isnan(cgg) or np.isnan(ids) or ids == 0.0:
+                risk[comp_name] = np.nan
+                continue
+
+            comp_noise = transistor_noise_specs_dict.get(comp_name)
+            if not isinstance(comp_noise, dict):
+                risk[comp_name] = np.nan
+                continue
+
+            noise_vals = []
+            missing_or_nan = False
+            for nkey in noise_keys:
+                val = comp_noise.get(nkey, np.nan)
+                try:
+                    nval = float(val)
+                except (TypeError, ValueError):
+                    missing_or_nan = True
+                    break
+                if np.isnan(nval):
+                    missing_or_nan = True
+                    break
+                noise_vals.append(nval)
+
+            if missing_or_nan:
+                risk[comp_name] = np.nan
+                continue
+
+            total_noise_rms = float(np.sqrt(np.sum(np.asarray(noise_vals, dtype=float) ** 2)))
+            risk[comp_name] = float(total_noise_rms * (cgg / ids))
+
+        return risk
 
     @staticmethod
     def find_vos(results, vcm=0.0):

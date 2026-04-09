@@ -33,8 +33,10 @@ CANONICAL_SPEC_KEYS = [
     'output_voltage_swing_max_v',
     'pm_deg',
     'power_w',
+    'v_cm_ctrl',
     'psrr_dc_db',
-    'settle_time_ns',
+    'settle_time_small_ns',
+    'settle_time_large_ns',
     'slew_rate_v_us',
     'thd_db',
     'ugbw_hz',
@@ -43,7 +45,11 @@ CANONICAL_SPEC_KEYS = [
 
 CANONICAL_OP_PARAMS = [
     'region_of_operation', 'ids', 'vds', 'vgs', 'gm', 'gds', 'vth', 'vdsat',
-    'cgg', 'cgs', 'cdd', 'cgd', 'css'
+    'cgg', 'cgs', 'cdd', 'cgd', 'css',
+    'noise_therm_rs_vrms', 'noise_therm_rd_vrms', 'noise_therm_rg_vrms',
+    'noise_therm_sid_vrms', 'noise_flicker_vrms',
+    'noise_shot_igb_vrms', 'noise_shot_igd_vrms', 'noise_shot_igs_vrms',
+    'fin_strength_risk', 'pelgrom_coefficient', 'stress_sensitivity', 'bandwidth_jitter_risk'
 ]
 
 class DataCollector:

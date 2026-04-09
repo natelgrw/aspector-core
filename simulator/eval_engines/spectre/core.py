@@ -24,6 +24,7 @@ import time
 import gc
 from shutil import which
 from simulator.eval_engines.spectre.parser import SpectreParser
+from simulator.eval_engines.utils.design_reps import extract_sizing_map
 
 
 # ===== Spectre Simulation Wrapper ===== #
@@ -71,6 +72,13 @@ class SpectreWrapper:
         file_loader = FileSystemLoader(os.path.dirname(netlist_loc))
         self.jinja_env = Environment(loader=file_loader)
         self.template = self.jinja_env.get_template(dsn_netlist_fname)
+
+        # Build sizing map once so post-process can initialize per-MM values
+        # even when DCOP fails.
+        try:
+            self.size_map = extract_sizing_map(netlist_loc)
+        except Exception:
+            self.size_map = {}
 
     def _get_design_name(self, state):
         """
@@ -236,7 +244,11 @@ class SpectreWrapper:
 
             # post-process results
             if self.post_process:
-                specs = self.post_process(results, state)
+                try:
+                    specs = self.post_process(results, state, self.size_map)
+                except TypeError:
+                    # Backward compatibility for legacy 2-arg post-process handlers.
+                    specs = self.post_process(results, state)
                 return state, specs, info
             specs = results
 

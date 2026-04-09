@@ -319,7 +319,7 @@ class Extractor:
             'power_w': 1e6,
             'integrated_noise_vrms': 1e7,
             'settling_time': 1e5,
-            'settle_time_ns': 1e5,
+            'settle_time_small_ns': 1e5,
             'vos_v': 1.0,
             'area': 1e5,
             'estimated_area_um2': 1e5,
@@ -328,7 +328,7 @@ class Extractor:
         if worst_valid_value is not None:
             # Use Z-score based penalty: worst_valid + 5σ
             # For minimize specs, 5σ above worst; for maximize, 5σ below
-            if spec_name in ['power_w', 'integrated_noise_vrms', 'settling_time', 'settle_time_ns', 'vos_v', 'area', 'estimated_area_um2']:
+            if spec_name in ['power_w', 'integrated_noise_vrms', 'settling_time', 'settle_time_small_ns', 'vos_v', 'area', 'estimated_area_um2']:
                 return worst_valid_value * (1.0 + z_score_severity)
             else:
                 return worst_valid_value / (1.0 + z_score_severity)
@@ -358,7 +358,7 @@ class Extractor:
         reward = 0
         
         # optimization direction
-        minimize_specs = ["power_w", "integrated_noise_vrms", "settling_time", "settle_time_ns", "vos_v", "estimated_area_um2", "area"]
+        minimize_specs = ["power_w", "integrated_noise_vrms", "settling_time", "settle_time_small_ns", "vos_v", "estimated_area_um2", "area"]
         
         for i, rel_spec in enumerate(rel_specs):
             s_name = specs_id[i]
@@ -549,7 +549,7 @@ class Extractor:
 
         # gatekeeper and tier-2 logic is skipped if dcop already failed
         if not dcop_failed:
-            region_MM = specs.get('zregion_of_operation_MM', {})
+            region_MM = specs.get('zzregion_of_operation_MM', specs.get('zregion_of_operation_MM', {}))
             ids_MM = specs.get('zzids_MM', {})
             if not isinstance(region_MM, dict):
                 region_MM = {}
@@ -651,8 +651,57 @@ class Extractor:
                     param_labels.append(label)
 
                 cap_params = {'cgg', 'cgs', 'cdd', 'cgd', 'css'}
-                core_labels = [lbl for lbl in param_labels if lbl not in cap_params]
+                noise_params = {
+                    'noise_therm_rs_vrms',
+                    'noise_therm_rd_vrms',
+                    'noise_therm_rg_vrms',
+                    'noise_therm_sid_vrms',
+                    'noise_flicker_vrms',
+                    'noise_shot_igb_vrms',
+                    'noise_shot_igd_vrms',
+                    'noise_shot_igs_vrms',
+                }
+                stochastic_params = {
+                    'fin_strength_risk',
+                    'pelgrom_coefficient',
+                    'stress_sensitivity',
+                    'bandwidth_jitter_risk',
+                }
+                core_labels = [
+                    lbl for lbl in param_labels
+                    if lbl not in cap_params and lbl not in noise_params and lbl not in stochastic_params
+                ]
                 cap_labels = [lbl for lbl in param_labels if lbl in cap_params]
+                noise_labels = [
+                    lbl for lbl in [
+                        'noise_therm_rs_vrms',
+                        'noise_therm_rd_vrms',
+                        'noise_therm_rg_vrms',
+                        'noise_therm_sid_vrms',
+                        'noise_flicker_vrms',
+                        'noise_shot_igb_vrms',
+                        'noise_shot_igd_vrms',
+                        'noise_shot_igs_vrms',
+                    ] if lbl in param_labels
+                ]
+                noise_display_map = {
+                    'noise_therm_rs_vrms': 'therm_rs_vrms',
+                    'noise_therm_rd_vrms': 'therm_rd_vrms',
+                    'noise_therm_rg_vrms': 'therm_rg_vrms',
+                    'noise_therm_sid_vrms': 'therm_sid_vrms',
+                    'noise_flicker_vrms': 'flicker_vrms',
+                    'noise_shot_igb_vrms': 'shot_igb_vrms',
+                    'noise_shot_igd_vrms': 'shot_igd_vrms',
+                    'noise_shot_igs_vrms': 'shot_igs_vrms',
+                }
+                stochastic_labels = [
+                    lbl for lbl in [
+                        'fin_strength_risk',
+                        'pelgrom_coefficient',
+                        'stress_sensitivity',
+                        'bandwidth_jitter_risk',
+                    ] if lbl in param_labels
+                ]
 
                 label_to_key = {}
                 for ok in op_keys:
@@ -661,19 +710,23 @@ class Extractor:
                         lab = lab[:-3]
                     label_to_key[lab] = ok
 
-                header_core = f"   {'FET':<6}" + "".join(f"{lbl:>12}" for lbl in core_labels)
+                core_col_widths = {lbl: max(12, len(lbl) + 2) for lbl in core_labels}
+                header_core = f"   {'FET':<6}" + "".join(
+                    f"{lbl:>{core_col_widths[lbl]}}" for lbl in core_labels
+                )
                 print(f"\n   Operating Points:")
                 print(header_core)
-                print(f"   {'-'*(6 + 12 * len(core_labels))}")
+                print(f"   {'-'*(6 + sum(core_col_widths.values()))}")
                 for mm in mm_names:
                     row = f"   {mm:<6}"
                     for lbl in core_labels:
+                        col_w = core_col_widths[lbl]
                         ok = label_to_key.get(lbl)
                         val = cur_specs.get(ok, {}).get(mm, 0.0) if ok else 0.0
                         if isinstance(val, float):
-                            row += f"{val:>12.4g}"
+                            row += f"{val:>{col_w}.4g}"
                         else:
-                            row += f"{str(val):>12}"
+                            row += f"{str(val):>{col_w}}"
                     print(row)
 
                 if cap_labels:
@@ -690,6 +743,40 @@ class Extractor:
                                 row += f"{val:>12.4g}"
                             else:
                                 row += f"{str(val):>12}"
+                        print(row)
+
+                if noise_labels:
+                    header_noise = f"   {'FET':<6}" + "".join(
+                        f"{noise_display_map.get(lbl, lbl):>18}" for lbl in noise_labels
+                    )
+                    print(f"\n   Transistor Noise (Vrms):")
+                    print(header_noise)
+                    print(f"   {'-'*(6 + 18 * len(noise_labels))}")
+                    for mm in mm_names:
+                        row = f"   {mm:<6}"
+                        for lbl in noise_labels:
+                            ok = label_to_key.get(lbl)
+                            val = cur_specs.get(ok, {}).get(mm, 0.0) if ok else 0.0
+                            if isinstance(val, float):
+                                row += f"{val:>18.4g}"
+                            else:
+                                row += f"{str(val):>18}"
+                        print(row)
+
+                if stochastic_labels:
+                    header_stochastic = f"   {'FET':<6}" + "".join(f"{lbl:>24}" for lbl in stochastic_labels)
+                    print(f"\n   Stochastic Params:")
+                    print(header_stochastic)
+                    print(f"   {'-'*(6 + 24 * len(stochastic_labels))}")
+                    for mm in mm_names:
+                        row = f"   {mm:<6}"
+                        for lbl in stochastic_labels:
+                            ok = label_to_key.get(lbl)
+                            val = cur_specs.get(ok, {}).get(mm, 0.0) if ok else 0.0
+                            if isinstance(val, float):
+                                row += f"{val:>24.4g}"
+                            else:
+                                row += f"{str(val):>24}"
                         print(row)
         print(f"   {'-'*50}")
         

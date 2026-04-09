@@ -57,15 +57,16 @@ class TurboMSizingGenerator:
         'output_voltage_swing_range_v': 1e-3,
         'power_w': 1e-6,
         'integrated_noise_vrms': 1e-9,
-        'thd_db': 1.0,
+        'thd_db': 0.1,
         'vos_v': 1e-4,
-        'settle_time_ns': 1e-3,
-        'estimated_area_um2': 1.0,
+        'settle_time_small_ns': 1e-3,
+        'settle_time_large_ns': 1e-3,
+        'estimated_area_um2': 0.1,
     }
 
     def __init__(self, 
                  dim, 
-                 specs_weights=None, # Required dictionary of weights
+                 specs_weights=None,
                  num_trust_regions=5, 
                  batch_size=64, 
                  failure_tolerance=None, 
@@ -233,9 +234,6 @@ class TurboMSizingGenerator:
 
                 if key == 'pm_deg':
                     continue 
-
-                if key == 'psrr_dc_db' and specs.get('is_diff', False):
-                    continue
 
                 raw_val = specs.get(key, 0.0)
                 if isinstance(raw_val, (list, tuple)): raw_val = abs(raw_val[1] - raw_val[0])
